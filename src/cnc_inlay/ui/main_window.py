@@ -307,18 +307,26 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._controls)
-        scroll.setMinimumWidth(260)
-        # No max — user can drag wider if they want, but the default fits all
-        # controls without horizontal scrolling thanks to WrapLongRows.
+
+        # Size the sidebar to fit every control on first paint without any
+        # horizontal scrolling. ``minimumSizeHint().width()`` reports the
+        # narrowest the controls panel can be without clipping (sizeHint is
+        # the *preferred* width, which the trailing stretches inflate to a
+        # silly number). Add the scrollbar gutter and a small breathing
+        # margin so the rightmost glyph never crowds the scroll track.
+        scrollbar_w = scroll.verticalScrollBar().sizeHint().width() or 16
+        controls_min_w = self._controls.minimumSizeHint().width()
+        sidebar_w = max(320, controls_min_w + scrollbar_w + 8)
+        scroll.setMinimumWidth(sidebar_w)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(scroll)
         splitter.addWidget(self._main_tabs)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        # Compact initial sidebar — labels wrap above fields automatically
-        # when a row would otherwise overflow.
-        splitter.setSizes([300, 980])
+        # Initial window is 1280 wide; reserve sidebar_w for the controls,
+        # everything else for the preview pane.
+        splitter.setSizes([sidebar_w, max(700, self.width() - sidebar_w)])
         # Non-opaque resize: splitter drag shows a thin handle indicator and
         # only resizes the panes ONCE on release. With opaque (continuous)
         # resize, each pixel of drag fires a resizeEvent on every canvas (4
