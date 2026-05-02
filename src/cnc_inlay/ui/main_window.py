@@ -130,6 +130,10 @@ class MainWindow(QMainWindow):
         self._design_svg_text: str | None = None
         self._units: Units = get_saved_units()
         self._current_project_path: Path | None = None
+        # True when there are unsaved changes (design loaded, controls
+        # edited, etc.). Used to drive the "Save changes?" prompt on Close
+        # Project / window-close. Cleared on save / open / new project.
+        self._is_dirty: bool = False
 
         # Four canvases — pocket and plug each get their own 3D and Top-down view.
         # Each canvas is locked into the right view_mode at construction.
@@ -299,6 +303,11 @@ class MainWindow(QMainWindow):
             pass
 
     def closeEvent(self, event):
+        # Window-close (red traffic light, Cmd+W, Cmd+Q) goes through here.
+        # Offer to save unsaved edits before tearing the window down.
+        if not self._maybe_prompt_save_changes():
+            event.ignore()
+            return
         self._cleanup()
         super().closeEvent(event)
 
@@ -348,6 +357,12 @@ class MainWindow(QMainWindow):
         save_project_as_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
         save_project_as_act.triggered.connect(self._on_save_project_as)
         file_menu.addAction(save_project_as_act)
+
+        file_menu.addSeparator()
+        close_project_act = QAction("Close Project", self)
+        close_project_act.setShortcut(QKeySequence("Ctrl+W"))
+        close_project_act.triggered.connect(self._on_close_project)
+        file_menu.addAction(close_project_act)
 
         file_menu.addSeparator()
         quit_act = QAction("Quit", self)
@@ -422,7 +437,9 @@ class MainWindow(QMainWindow):
         self._controls.parametersChanged.connect(self._on_params_changed_refresh_guide)
         self._controls.parametersChanged.connect(self._refresh_finished_canvas)
         self._controls.parametersChanged.connect(self._refresh_stock_outlines)
+        self._controls.parametersChanged.connect(self._mark_dirty)
         self._controls.designSizeChanged.connect(self._on_design_size_changed)
+        self._controls.designSizeChanged.connect(lambda *_: self._mark_dirty())
         # Updater results: signals are emitted from the daemon worker thread
         # in updater.py; Qt's auto-connection (sender in worker thread,
         # receiver self in main thread) queues delivery to the main-thread
@@ -603,17 +620,23 @@ class MainWindow(QMainWindow):
             plunge_user_edited=plunge_e,
         )
 
-    def _on_save_project(self) -> None:
+    def _on_save_project(self) -> bool:
+        """Save the project. Returns True if saved successfully (or if there
+        was no project to save), False if the save failed or the user
+        cancelled the Save As dialog. Used by the close-project flow."""
         if self._current_project_path is None:
-            self._on_save_project_as()
-            return
+            return self._on_save_project_as()
         try:
             save_project(self._current_project_path, self._gather_project())
-            self._set_status(f"Saved project to {self._current_project_path.name}")
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
+            return False
+        self._is_dirty = False
+        self._set_status(f"Saved project to {self._current_project_path.name}")
+        return True
 
-    def _on_save_project_as(self) -> None:
+    def _on_save_project_as(self) -> bool:
+        """Returns True on successful save, False on cancel or error."""
         suggested = "untitled.inlay"
         if self._design and self._design.source_path is not None:
             suggested = str(self._design.source_path.with_suffix(".inlay"))
@@ -621,22 +644,116 @@ class MainWindow(QMainWindow):
             self, "Save project as", suggested, "Inlay project (*.inlay);;All files (*)"
         )
         if not path:
-            return
+            return False
         if not path.endswith(".inlay"):
             path = path + ".inlay"
         try:
             save_project(path, self._gather_project())
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
-            return
+            return False
         self._current_project_path = Path(path)
         self.setWindowTitle(f"CNC Inlay Studio — {self._current_project_path.name}")
+        self._is_dirty = False
         self._set_status(f"Saved project to {Path(path).name}")
+        return True
 
     def _on_new_window(self) -> None:
         """Open a fresh, blank project in its own top-level window so the
         user can work on multiple inlay projects side-by-side."""
         MainWindow.open_new_window()
+
+    # ------------------------------------------------------ close / dirty
+
+    def _maybe_prompt_save_changes(self) -> bool:
+        """If the project has unsaved changes, ask the user what to do.
+
+        Returns True if it's safe to proceed (either nothing to save, or the
+        user chose Save / Discard and any save succeeded). Returns False if
+        the user cancelled or the save itself failed — in which case the
+        caller should abort the close.
+        """
+        if not self._is_dirty:
+            return True
+        if self._design is None and self._current_project_path is None:
+            # Nothing meaningful loaded — silently proceed.
+            return True
+        name = (
+            self._current_project_path.name
+            if self._current_project_path is not None
+            else "this project"
+        )
+        reply = QMessageBox.question(
+            self,
+            "Save changes?",
+            f"<b>{name}</b> has unsaved changes.<br><br>"
+            "Do you want to save them before closing?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if reply == QMessageBox.Cancel:
+            return False
+        if reply == QMessageBox.Save:
+            return self._on_save_project()
+        # Discard
+        return True
+
+    def _on_close_project(self) -> None:
+        """File → Close Project. Prompts to save unsaved changes, then resets
+        the current window to an empty-project state (does NOT close the
+        window itself — to close the window use Cmd+W if Close Project is
+        bound to a different shortcut, or the red traffic-light button)."""
+        if not self._maybe_prompt_save_changes():
+            return
+        self._reset_to_blank_project()
+
+    def _reset_to_blank_project(self) -> None:
+        """Wipe all project state and return the UI to its launch defaults.
+        Used by Close Project. Intentionally does NOT close the window so
+        the user can immediately load a different design or project."""
+        from cnc_inlay.core.job import InlayParams
+
+        self._design = None
+        self._design_svg_text = None
+        self._result = None
+        self._current_project_path = None
+        self._pending_resume = None
+
+        for c in self._all_2d_canvases():
+            c.set_design(None)
+        for c in self._all_3d_canvases():
+            c.set_design(None)
+
+        # Reset every control back to defaults.
+        self._controls.apply_params(InlayParams())
+        self._controls.set_design_summary("No project loaded", 0.0, 0.0)
+        self._controls.set_summary("")
+        self._controls.set_recommendation(
+            "Load an SVG or open a project to begin."
+        )
+
+        self._refresh_finished_canvas()
+        # Clear stock-outline overlays; no design to size against.
+        for c in (*self._all_2d_canvases(), *self._all_3d_canvases()):
+            try:
+                c.set_stock_outline(0.0, 0.0)
+            except Exception:
+                pass
+        self._control_panel.set_run_available(False)
+        self._control_panel.set_simulation_available(False)
+
+        self.setWindowTitle("CNC Inlay Studio")
+        self._is_dirty = False
+        self._set_status("Project closed.")
+
+    def _mark_dirty(self) -> None:
+        """Hook invoked whenever the user changes something that should
+        prompt a save on close. Cheap; safe to call on every parameter
+        change. Only takes effect after a project / design is loaded — until
+        then there's nothing to lose."""
+        if self._design is None and self._current_project_path is None:
+            return
+        self._is_dirty = True
 
     def _on_open_project(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -713,6 +830,11 @@ class MainWindow(QMainWindow):
                 )
             self._current_project_path = source_path
             self.setWindowTitle(f"CNC Inlay Studio — {source_path.name}")
+            # Project just opened from disk — nothing to save.
+            # _apply_loaded_design / _on_design_size_changed both set
+            # _is_dirty=True earlier in the chain; clear it now that we
+            # know the load came from a saved project, not user edits.
+            self._is_dirty = False
             self._set_status(f"Loaded project {source_path.name}")
 
         # Prefer the embedded SVG content (portable); fall back to the path on
@@ -991,6 +1113,9 @@ class MainWindow(QMainWindow):
         )
         self._controls.set_summary("")
         suffix = auto_fit_msg or ""
+        # Loading a fresh design (not via project open) starts dirty —
+        # nothing has been saved yet.
+        self._is_dirty = True
         self._set_status(f"Loaded {display_name}{suffix}")
 
     def _on_design_size_changed(self, width_mm: float, height_mm: float) -> None:
