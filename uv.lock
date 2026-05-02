@@ -91,7 +91,7 @@ wheels = [
 
 [[package]]
 name = "cnc-inlay"
-version = "0.1.9"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-genai" },
