@@ -62,7 +62,14 @@ class Canvas3D(gl.GLViewWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setBackgroundColor(pg.mkColor(BG))
-        self.opts["distance"] = 250
+        # Initial camera frames the WHOLE bed envelope. Setting distance=250
+        # was too close for the new elev=60 / azim=270 default — the camera
+        # ended up partially inside the 270×150 bed, clipping the grid +
+        # screw circles. Axis-label GLTextItems render at fixed screen
+        # pixels and stayed visible regardless, which is the bug we fixed
+        # here. ``_reset_camera`` only runs when set_design() is called, so
+        # a fresh window with no design also needs this baseline.
+        self.opts["distance"] = max(BED_WIDTH_MM, BED_HEIGHT_MM) * 2.0
         self.opts["elevation"] = self.DEFAULT_ELEVATION
         self.opts["azimuth"] = self.DEFAULT_AZIMUTH
         # Discoverability — pyqtgraph's GLViewWidget supports rotate/pan/zoom
