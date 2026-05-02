@@ -142,9 +142,9 @@ if [[ -d "$QT_PLUGINS_DIR" ]]; then
            "$QT_PLUGINS_DIR/sqldrivers" \
            "$QT_PLUGINS_DIR/webview" 2>/dev/null || true
 fi
-# Drop a few transitive Python deps we don't call.
-rm -rf "$APP_BUNDLE/Contents/Frameworks/cryptography" \
-       "$APP_BUNDLE/Contents/Frameworks/cffi" 2>/dev/null || true
+# Note: do NOT prune cryptography/ or cffi/ — google-genai (AI image
+# generation) transitively imports cryptography.hazmat.bindings._rust at
+# module-load time. Dropping it crashes the app at startup.
 
 NEW_SIZE=$(du -sh "$APP_BUNDLE" | awk '{print $1}')
 echo "✓ Pruned bundle size: $NEW_SIZE"
