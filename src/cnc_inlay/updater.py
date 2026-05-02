@@ -301,13 +301,24 @@ def download_update(
     return dest
 
 
+def get_installer_log_path() -> Path:
+    """Stable log path for the auto-installer's bash helper. Lives in the
+    standard macOS user logs folder so it persists across updates and the
+    user can `cat` it (or open in Console.app) if a relaunch goes sideways.
+    """
+    log_dir = Path.home() / "Library" / "Logs" / "CNC Inlay Studio"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "installer.log"
+
+
 def install_update_and_relaunch(dmg_path: Path) -> None:
     """Spawn a detached helper that waits for THIS process to exit, mounts
     the DMG, swaps the .app bundle, and relaunches the new version. Then
     quit the app so the helper can do its work.
 
-    The helper is a generated bash script in $TMPDIR; it logs to a file
-    next to itself so failures can be diagnosed after the fact.
+    The helper writes a verbose ``set -x`` trace to
+    ``~/Library/Logs/CNC Inlay Studio/installer.log`` so any failure can be
+    diagnosed after the fact (and surfaced to the user via osascript).
     """
     bundle = get_installed_bundle_path()
     if bundle is None:
@@ -316,21 +327,22 @@ def install_update_and_relaunch(dmg_path: Path) -> None:
             "manually if you launched from source."
         )
     pid = os.getpid()
+    log_path = get_installer_log_path()
     fd, helper_path = tempfile.mkstemp(
         suffix=".sh", prefix="cnc-inlay-installer-"
     )
     os.close(fd)
-    log_path = helper_path + ".log"
     helper_src = _build_installer_script(
         parent_pid=pid,
         dmg_path=str(dmg_path),
         bundle_path=str(bundle),
-        log_path=log_path,
+        log_path=str(log_path),
     )
     Path(helper_path).write_text(helper_src)
     os.chmod(helper_path, 0o755)
     # Detach the helper: new session, no controlling tty, both stdio dropped.
-    # If we don't fully detach, killing the parent (us) cascades to the helper.
+    # Without start_new_session=True, killing the parent (us) cascades to
+    # the helper through the shared process group.
     subprocess.Popen(
         ["/bin/bash", helper_path],
         stdout=subprocess.DEVNULL,
@@ -346,95 +358,149 @@ def _build_installer_script(
 ) -> str:
     """Generate the bash helper that does the swap + relaunch.
 
-    Strategy:
-      1. Wait for the parent (running app) to exit.
-      2. Mount the downloaded DMG with hdiutil (-nobrowse so Finder doesn't
-         pop the volume).
-      3. Find the new .app inside the mount.
-      4. rsync (or cp -R) the new bundle over the existing one in /Applications.
-         Atomic-ish: we move the old aside first, rename new in, then delete old.
-      5. Strip the quarantine xattr so Gatekeeper doesn't re-prompt.
-      6. Detach the DMG.
-      7. ``open`` the new .app to launch it as a fresh process.
-      8. Self-delete and clean up the downloaded .dmg.
+    Hardened against the silent-failure mode where the app would close but
+    not reopen:
+      - Logs the full ``set -x`` trace to a stable persistent path
+        (``~/Library/Logs/CNC Inlay Studio/installer.log``) so anything
+        going wrong is recoverable post-mortem.
+      - Uses ``open -n -F`` (force NEW instance, ignore saved state) — the
+        plain ``open`` call would sometimes coalesce with Launch Services'
+        cached entry for the now-deleted bundle path.
+      - Verifies the new app is actually running (pgrep) within 10 s; if not,
+        falls back to executing the inner Mach-O binary directly.
+      - If even the fallback fails, pops a native macOS dialog telling the
+        user the install completed but to launch the app manually, with the
+        log path so they can paste it into a bug report.
     """
-    # Use shlex to safely embed the paths — they may contain spaces.
     return f"""#!/bin/bash
-# Auto-installer for CNC Inlay Studio update.
-# Generated at {Path(__file__).name} runtime; safe to delete after run.
+# Auto-installer for CNC Inlay Studio. Detached from the parent app;
+# safe to delete after a successful run (script self-deletes at the end).
 
-set -u
 PARENT_PID={parent_pid}
 DMG={shlex.quote(dmg_path)}
 BUNDLE={shlex.quote(bundle_path)}
 LOG={shlex.quote(log_path)}
 
+# Capture EVERYTHING from this point forward — including set -x traces.
+mkdir -p "$(dirname "$LOG")" 2>/dev/null
 exec >>"$LOG" 2>&1
-echo "=== installer started $(date) pid=$$"
-echo "  parent_pid=$PARENT_PID"
+echo
+echo "================================================================"
+echo "=== installer started $(date)  pid=$$  parent_pid=$PARENT_PID"
 echo "  dmg=$DMG"
 echo "  bundle=$BUNDLE"
+echo "================================================================"
+set -x
 
-# 1. Wait for the running app to exit.
-echo "waiting for parent to exit…"
+notify_user() {{
+    # Pop a Finder-style dialog the user can't miss. Best-effort; ignored
+    # if osascript isn't available.
+    local msg="$1"
+    osascript -e "display dialog \\"$msg\\" with title \\"CNC Inlay Studio Update\\" buttons {{\\"OK\\"}} default button \\"OK\\"" 2>/dev/null || true
+}}
+
+# 1. Wait for the running app to exit (max 30 s).
 for i in $(seq 1 60); do
     kill -0 "$PARENT_PID" 2>/dev/null || break
     sleep 0.5
 done
 if kill -0 "$PARENT_PID" 2>/dev/null; then
-    echo "parent still alive after 30s — aborting"
+    echo "ABORT: parent still alive after 30s"
+    notify_user "Update aborted — the previous app didn't quit. Try again."
     exit 1
 fi
-echo "parent gone; proceeding"
 
 # 2. Mount the DMG.
-MOUNT_POINT=$(hdiutil attach -nobrowse -noverify -noautoopen "$DMG" 2>>"$LOG" \\
-    | tail -1 | awk -F'\\t' '{{print $NF}}')
+MOUNT_OUTPUT=$(hdiutil attach -nobrowse -noverify -noautoopen "$DMG" 2>&1)
+echo "$MOUNT_OUTPUT"
+MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | grep -E "^/dev/" | tail -1 | awk -F'\\t' '{{print $NF}}' | sed 's/^ *//')
 if [ -z "$MOUNT_POINT" ] || [ ! -d "$MOUNT_POINT" ]; then
-    echo "hdiutil attach failed; mount_point=$MOUNT_POINT"
+    echo "ABORT: hdiutil attach failed (mount_point='$MOUNT_POINT')"
+    notify_user "Update download mounted incorrectly. See ~/Library/Logs/CNC Inlay Studio/installer.log"
     exit 1
 fi
-echo "mounted at $MOUNT_POINT"
 
 # 3. Find the .app inside the mount.
 NEW_APP=$(find "$MOUNT_POINT" -maxdepth 2 -name "*.app" -type d | head -1)
 if [ -z "$NEW_APP" ]; then
-    echo "no .app found inside DMG"
+    echo "ABORT: no .app found inside DMG"
     hdiutil detach "$MOUNT_POINT" -quiet || true
+    notify_user "Update DMG is missing the .app bundle. See installer.log"
     exit 1
 fi
-echo "new app: $NEW_APP"
 
-# 4. Atomic-ish swap. Move old to a tmp name, copy new in, delete old tmp.
+# 4. Atomic-ish swap.
 BACKUP="${{BUNDLE}}.old-$$"
-echo "backing up old bundle to $BACKUP"
-mv "$BUNDLE" "$BACKUP" || {{ echo "could not move old bundle aside"; hdiutil detach "$MOUNT_POINT" -quiet; exit 1; }}
-echo "copying new bundle into place"
+mv "$BUNDLE" "$BACKUP" || {{
+    echo "ABORT: could not move old bundle aside (insufficient permissions?)"
+    hdiutil detach "$MOUNT_POINT" -quiet || true
+    notify_user "Couldn't replace the installed app — check Applications folder permissions. See installer.log"
+    exit 1
+}}
 cp -R "$NEW_APP" "$BUNDLE" || {{
-    echo "copy failed — restoring old bundle"
+    echo "ABORT: cp failed — restoring old bundle"
     rm -rf "$BUNDLE" 2>/dev/null
     mv "$BACKUP" "$BUNDLE"
-    hdiutil detach "$MOUNT_POINT" -quiet
+    hdiutil detach "$MOUNT_POINT" -quiet || true
+    notify_user "Update install failed; previous version restored. See installer.log"
     exit 1
 }}
 rm -rf "$BACKUP"
-echo "swap complete"
 
 # 5. Clear the quarantine attribute so Gatekeeper doesn't re-prompt.
-xattr -cr "$BUNDLE" 2>>"$LOG" || true
+xattr -cr "$BUNDLE" 2>/dev/null || true
 
 # 6. Detach the DMG.
 hdiutil detach "$MOUNT_POINT" -quiet || true
 
-# 7. Launch the new version.
-echo "launching $BUNDLE"
-open "$BUNDLE"
+# 7. Tell Launch Services about the new bundle so its cache doesn't keep
+# pointing at the OLD inode (which we just deleted). Without this `open`
+# can fail to find the app even though the bundle exists at the path.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+if [ -x "$LSREGISTER" ]; then
+    "$LSREGISTER" -f "$BUNDLE" 2>/dev/null || true
+fi
 
-# 8. Clean up.
+# 8. Launch the new version. -n forces a fresh instance (so Launch Services
+# doesn't try to "reuse" the old PID), -F clears any saved window state.
+LAUNCH_NAME="$(basename "$BUNDLE" .app)"
+LAUNCHED=0
+if open -n -F "$BUNDLE"; then
+    # Verify the new process actually started (open returns success even
+    # when it queues a launch that LS subsequently drops).
+    for i in $(seq 1 20); do
+        if pgrep -f "$BUNDLE/Contents/MacOS/" >/dev/null 2>&1; then
+            LAUNCHED=1
+            echo "verified new process running"
+            break
+        fi
+        sleep 0.5
+    done
+fi
+
+# 9. Fallback: bypass Launch Services entirely and exec the inner binary.
+if [ "$LAUNCHED" -eq 0 ]; then
+    echo "open failed or process didn't appear — falling back to direct exec"
+    BIN=$(find "$BUNDLE/Contents/MacOS" -maxdepth 1 -type f -perm -u+x | head -1)
+    if [ -n "$BIN" ]; then
+        nohup "$BIN" >/dev/null 2>&1 &
+        sleep 1
+        if pgrep -f "$BUNDLE/Contents/MacOS/" >/dev/null 2>&1; then
+            LAUNCHED=1
+            echo "verified via direct exec"
+        fi
+    fi
+fi
+
+if [ "$LAUNCHED" -eq 0 ]; then
+    echo "ALL LAUNCH ATTEMPTS FAILED"
+    notify_user "Update installed, but the app didn't relaunch automatically. Open it from your Applications folder. (Log at ~/Library/Logs/CNC Inlay Studio/installer.log)"
+fi
+
+# 10. Clean up.
 rm -f "$DMG"
-echo "=== installer done $(date)"
-# Self-delete (last thing we do).
-( sleep 1; rm -f "$0" ) &
+echo "=== installer done $(date) launched=$LAUNCHED"
+( sleep 2; rm -f "$0" ) &
 """
 
 
