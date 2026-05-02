@@ -96,6 +96,141 @@ def _format_duration(cut_mm: float, air_mm: float, feed_mm_min: float) -> str:
     return f"{minutes}m {seconds:02d}s"
 
 
+# ---------------------------------------------------------- toolpath caching
+
+def _serialise_pipeline_result(result) -> dict:
+    """Convert a PipelineResult to JSON-friendly nested dicts. Stored in the
+    project file so reopen doesn't have to re-run the (slow) pipeline. The
+    inverse is _deserialise_pipeline_result, called on project open after
+    the cache_signature matches.
+    """
+    def _serialise_side(side) -> dict:
+        return {
+            "chains_full": side.chains_full,
+            "gcode": side.gcode,
+            "cut_length_mm": side.cut_length_mm,
+            "air_length_mm": side.air_length_mm,
+            # bit_chains carries Bit objects; we only need the bit's name
+            # so we can look it up in the live bit library on reload.
+            "bit_chains": [
+                {
+                    "bit_name": bit.name,
+                    "chains": chains,
+                    "role": role,
+                    "duration_s": duration_s,
+                }
+                for (bit, chains, role, duration_s) in (side.bit_chains or [])
+            ],
+        }
+
+    finished_geom_wkb = None
+    if result.finished_geometry is not None:
+        try:
+            finished_geom_wkb = result.finished_geometry.wkb_hex
+        except Exception:
+            finished_geom_wkb = None
+
+    return {
+        "pocket": _serialise_side(result.pocket),
+        "plug": _serialise_side(result.plug),
+        "finished_geometry_wkb_hex": finished_geom_wkb,
+    }
+
+
+def _deserialise_pipeline_result(d: dict, bit_library: list):
+    """Inverse of _serialise_pipeline_result. Returns a PipelineResult with
+    pocket+plug Sides + finished_geometry. Coverage / fragility / stock-fit
+    / recommendation are NOT cached — they're cheap to recompute and depend
+    on the live design polygon.
+    """
+    from cnc_inlay.core.pipeline import PipelineResult, Side
+    from shapely import wkb as _wkb
+    by_name = {b.name: b for b in (bit_library or [])}
+
+    def _deserialise_side(sd: dict) -> Side:
+        bit_chains = []
+        for entry in sd.get("bit_chains") or []:
+            bit = by_name.get(entry.get("bit_name"))
+            if bit is None:
+                # Cached bit no longer exists in the library — abandon cache.
+                raise ValueError(f"cached bit {entry.get('bit_name')!r} missing")
+            chains = [
+                [tuple(p) for p in chain] for chain in entry.get("chains") or []
+            ]
+            bit_chains.append(
+                (bit, chains, entry.get("role", ""), float(entry.get("duration_s", 0.0)))
+            )
+        chains_full = [
+            [tuple(p) for p in chain] for chain in sd.get("chains_full") or []
+        ]
+        return Side(
+            clear_preview=chains_full,
+            chains_full=chains_full,
+            gcode=sd.get("gcode", ""),
+            cut_length_mm=float(sd.get("cut_length_mm", 0.0)),
+            air_length_mm=float(sd.get("air_length_mm", 0.0)),
+            bit_chains=bit_chains,
+        )
+
+    finished_geom = None
+    wkb_hex = d.get("finished_geometry_wkb_hex")
+    if wkb_hex:
+        try:
+            finished_geom = _wkb.loads(bytes.fromhex(wkb_hex))
+        except Exception:
+            finished_geom = None
+
+    return PipelineResult(
+        pocket=_deserialise_side(d["pocket"]),
+        plug=_deserialise_side(d["plug"]),
+        coverage=None,
+        recommendation=None,
+        fragility=None,
+        stock_fit=None,
+        finished_geometry=finished_geom,
+    )
+
+
+def _compute_cache_signature(
+    *, design, params, pocket_mat, plug_mat, endmill, bit_library
+) -> str:
+    """Hash every input that influences the pipeline output. The cache is
+    only restored when this hash matches the current state — any edit to
+    geometry, params, materials, bit selection, or speeds invalidates it.
+    """
+    import hashlib
+    import json as _json
+
+    h = hashlib.sha256()
+    if design is not None and design.polygon is not None:
+        try:
+            h.update(design.polygon.wkb)
+        except Exception:
+            pass
+    # Params: dump every dataclass field deterministically.
+    try:
+        from dataclasses import asdict
+        params_dict = asdict(params)
+        # Convert non-JSON-serialisable enums and nested dataclasses to strings.
+        def _norm(v):
+            if isinstance(v, dict):
+                return {k: _norm(vv) for k, vv in v.items()}
+            if isinstance(v, list):
+                return [_norm(x) for x in v]
+            if hasattr(v, "value"):  # Enum
+                return v.value
+            return v
+        h.update(_json.dumps(_norm(params_dict), sort_keys=True).encode())
+    except Exception:
+        pass
+    h.update((pocket_mat.name if pocket_mat else "").encode())
+    h.update((plug_mat.name if plug_mat else "").encode())
+    h.update((endmill.name if endmill else "").encode())
+    # Bit library names (so adding/removing bits invalidates).
+    h.update(",".join(sorted(b.name for b in (bit_library or []))).encode())
+    return h.hexdigest()
+
+
 class MainWindow(QMainWindow):
     # Class-level registry of every open MainWindow in the current process.
     # Holds a strong reference so windows aren't garbage-collected after the
@@ -263,6 +398,11 @@ class MainWindow(QMainWindow):
         # are explicitly new projects, not recoveries.
         if self._is_first_window:
             from PySide6.QtCore import QTimer as _QTimer
+            # Post-update session restore: if a previous run was relaunched
+            # by the auto-installer, it stashed the open project's path.
+            # Pop it (one-shot) and reopen on a deferred timer so the main
+            # window paints first.
+            _QTimer.singleShot(150, self._maybe_reopen_after_update)
             _QTimer.singleShot(300, self._maybe_offer_resume)
             # Background update check — also first-window-only so opening
             # extra project windows doesn't re-poll GitHub on every spawn.
@@ -604,6 +744,28 @@ class MainWindow(QMainWindow):
         if self._design is not None:
             design_w = self._design.width_mm
             design_h = self._design.height_mm
+        # If we already have a pipeline result and the user hasn't edited
+        # anything since it was generated, cache it in the project file so
+        # reopening doesn't have to re-run the (slow) pipeline.
+        cached_result = None
+        cache_signature = None
+        if self._result is not None:
+            try:
+                cached_result = _serialise_pipeline_result(self._result)
+                cache_signature = _compute_cache_signature(
+                    design=self._design,
+                    params=params,
+                    pocket_mat=pocket_mat,
+                    plug_mat=plug_mat,
+                    endmill=endmill,
+                    bit_library=self._bits,
+                )
+            except Exception:
+                # Don't let a cache-serialisation bug block the save —
+                # worst case the project just won't have toolpaths cached.
+                cached_result = None
+                cache_signature = None
+
         return ProjectFile(
             design_path=design_path,
             design_filename=design_filename,
@@ -618,6 +780,8 @@ class MainWindow(QMainWindow):
             rpm_user_edited=rpm_e,
             feed_user_edited=feed_e,
             plunge_user_edited=plunge_e,
+            cached_result=cached_result,
+            cache_signature=cache_signature,
         )
 
     def _on_save_project(self) -> bool:
@@ -755,6 +919,114 @@ class MainWindow(QMainWindow):
             return
         self._is_dirty = True
 
+    def _maybe_restore_cached_result(self, project: ProjectFile) -> bool:
+        """If ``project`` has a cached pipeline result whose signature still
+        matches the current params + design, install it as ``self._result``
+        and paint the canvases — skipping the slow run_pipeline call.
+
+        Returns True iff the cache was restored. False means the caller
+        should let the user run Preview Toolpaths to compute fresh.
+        """
+        if project.cached_result is None or project.cache_signature is None:
+            return False
+        if self._design is None:
+            return False
+        params = self._controls.current_params()
+        pocket_mat = self._controls.current_pocket_material()
+        plug_mat = self._controls.current_plug_material()
+        endmill = self._controls.current_endmill()
+        live_sig = _compute_cache_signature(
+            design=self._design,
+            params=params,
+            pocket_mat=pocket_mat,
+            plug_mat=plug_mat,
+            endmill=endmill,
+            bit_library=self._bits,
+        )
+        if live_sig != project.cache_signature:
+            return False
+        try:
+            result = _deserialise_pipeline_result(project.cached_result, self._bits)
+        except Exception:
+            return False
+        # Hand the cached result through the same path the live pipeline uses.
+        self._on_preview_done(result, params, endmill, pocket_mat, plug_mat)
+        return True
+
+    def _maybe_reopen_after_update(self) -> None:
+        """If the previous launch was triggered by the auto-installer, the
+        update flow stashed the open project's path. Pop and re-open it."""
+        from cnc_inlay.updater import take_reopen_project_path
+        from cnc_inlay.core.project import load_project
+
+        path = take_reopen_project_path()
+        if not path:
+            return
+        try:
+            project = load_project(path)
+        except Exception as exc:
+            self._set_status(f"Couldn't reopen project after update: {exc}")
+            return
+        self._apply_project(project, source_path=Path(path))
+
+    def prepare_for_update_install(self) -> bool:
+        """Persist enough state for the post-update relaunch to restore the
+        user's open project. Called by the in-app updater right before it
+        kicks off the download.
+
+        Returns True if it's safe to proceed with the update, False if the
+        user cancelled (e.g. declined to save an unsaved untitled project).
+        """
+        from cnc_inlay.updater import set_reopen_project_path
+
+        # No project loaded — nothing to restore. Clear any stale reopen marker.
+        if self._design is None and self._current_project_path is None:
+            set_reopen_project_path(None)
+            return True
+
+        # Untitled project (design loaded but never saved as .inlay): need
+        # the user to give it a name before we can record what to reopen.
+        if self._current_project_path is None:
+            reply = QMessageBox.question(
+                self,
+                "Save before updating?",
+                "<p>Save your unsaved work so it reopens automatically after "
+                "the update?</p>",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                QMessageBox.Save,
+            )
+            if reply == QMessageBox.Cancel:
+                return False
+            if reply == QMessageBox.Save:
+                if not self._on_save_project_as():
+                    # User cancelled the Save As file dialog.
+                    return False
+            # Discard: don't save anything, don't mark for reopen.
+            if self._current_project_path is None:
+                set_reopen_project_path(None)
+                return True
+
+        # Project has a path. Save in place if there are unsaved edits, then
+        # record the path for the post-restart reopener.
+        if self._is_dirty:
+            try:
+                save_project(
+                    self._current_project_path, self._gather_project()
+                )
+                self._is_dirty = False
+            except Exception as exc:
+                QMessageBox.warning(
+                    self,
+                    "Save failed",
+                    f"<p>Couldn't save the project before updating:</p>"
+                    f"<p><code>{exc}</code></p>"
+                    "<p>The update will still install, but you'll need to "
+                    "reopen the project manually after restart.</p>",
+                )
+                # Still proceed — user explicitly chose to update.
+        set_reopen_project_path(str(self._current_project_path))
+        return True
+
     def _on_open_project(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Open project", "", "Inlay project (*.inlay);;All files (*)"
@@ -835,7 +1107,16 @@ class MainWindow(QMainWindow):
             # _is_dirty=True earlier in the chain; clear it now that we
             # know the load came from a saved project, not user edits.
             self._is_dirty = False
-            self._set_status(f"Loaded project {source_path.name}")
+
+            # Restore cached toolpaths (skip the slow pipeline) IFF the
+            # signature still matches the loaded params + design.
+            cache_restored = self._maybe_restore_cached_result(project)
+            if cache_restored:
+                self._set_status(
+                    f"Loaded project {source_path.name} (cached toolpaths)"
+                )
+            else:
+                self._set_status(f"Loaded project {source_path.name}")
 
         # Prefer the embedded SVG content (portable); fall back to the path on
         # disk (legacy projects). If both are missing, the project loaded

@@ -1,6 +1,6 @@
 [project]
 name = "cnc-inlay"
-version = "0.1.4"
+version = "0.1.5"
 description = "Generate paired pocket/plug G-code files for CNC wood inlays from SVG or PNG silhouettes."
 authors = [
     { name = "Malcolm Ross", email = "ross.malcolm@gmail.com" }

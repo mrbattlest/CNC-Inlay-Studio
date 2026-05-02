@@ -23,7 +23,7 @@ from cnc_inlay.core.job import BitSpeedOverride, InlayParams, Origin
 from cnc_inlay.core.units import Units
 
 
-PROJECT_VERSION = 6  # v6 added per-bit speed overrides (bit_speed_overrides)
+PROJECT_VERSION = 7  # v7 added cached pipeline result (avoid re-running on open)
 
 
 @dataclass
@@ -45,6 +45,15 @@ class ProjectFile:
     rpm_user_edited: bool = False
     feed_user_edited: bool = False
     plunge_user_edited: bool = False
+    # Cached pipeline result so reopening doesn't re-run the (slow) toolpath
+    # computation. Format is opaque to the project file (a JSON-friendly
+    # nested dict produced by main_window._serialise_pipeline_result and
+    # restored by _deserialise_pipeline_result). ``cache_signature`` is a
+    # hash of every input that influences the result; a cache is only
+    # restored when the signature still matches the loaded params, so any
+    # edit invalidates it cleanly without keeping stale chains.
+    cached_result: dict | None = None
+    cache_signature: str | None = None
 
 
 def _params_to_dict(p: InlayParams) -> dict:
@@ -158,6 +167,8 @@ def save_project(path: str | Path, project: ProjectFile) -> None:
         "rpm_user_edited": project.rpm_user_edited,
         "feed_user_edited": project.feed_user_edited,
         "plunge_user_edited": project.plunge_user_edited,
+        "cached_result": project.cached_result,
+        "cache_signature": project.cache_signature,
     }
     Path(path).write_text(json.dumps(data, indent=2))
 
@@ -187,6 +198,8 @@ def load_project(path: str | Path) -> ProjectFile:
         rpm_user_edited=bool(data.get("rpm_user_edited", False)),
         feed_user_edited=bool(data.get("feed_user_edited", False)),
         plunge_user_edited=bool(data.get("plunge_user_edited", False)),
+        cached_result=data.get("cached_result"),
+        cache_signature=data.get("cache_signature"),
     )
     # v5 → v6: any global speed override gets attached to the saved finishing
     # bit so the user's prior tuning carries forward into the new per-bit
