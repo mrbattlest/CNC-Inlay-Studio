@@ -774,6 +774,16 @@ class MainWindow(QMainWindow):
                 cached_result = None
                 cache_signature = None
 
+        # Snapshot the user's current 3D view orientation. We grab it from the
+        # pocket canvas; both 3D canvases share the same default + saved view
+        # so reading either is fine. The user may be sitting on the plug tab
+        # — in which case the pocket canvas's last orientation is whatever
+        # they were last looking at when on the pocket tab. Acceptable.
+        try:
+            view_orientation = self._pocket_canvas3d.get_view_orientation()
+        except Exception:
+            view_orientation = None
+
         return ProjectFile(
             design_path=design_path,
             design_filename=design_filename,
@@ -790,6 +800,7 @@ class MainWindow(QMainWindow):
             plunge_user_edited=plunge_e,
             cached_result=cached_result,
             cache_signature=cache_signature,
+            view_orientation=view_orientation,
         )
 
     def _on_save_project(self) -> bool:
@@ -1117,8 +1128,20 @@ class MainWindow(QMainWindow):
             self._is_dirty = False
 
             # Restore cached toolpaths (skip the slow pipeline) IFF the
-            # signature still matches the loaded params + design.
+            # signature still matches the loaded params + design. This may
+            # reset the 3D camera as a side effect of _on_preview_done, so
+            # we apply the saved view orientation AFTER, last-write-wins.
             cache_restored = self._maybe_restore_cached_result(project)
+
+            # Now apply the saved 3D camera angle if the project file has
+            # one (v7+); otherwise fall through to the default orientation.
+            if project.view_orientation:
+                for canvas in self._all_3d_canvases():
+                    canvas.set_view_orientation(project.view_orientation)
+            else:
+                for canvas in self._all_3d_canvases():
+                    canvas.reset_view()
+
             if cache_restored:
                 self._set_status(
                     f"Loaded project {source_path.name} (cached toolpaths)"
@@ -1392,6 +1415,10 @@ class MainWindow(QMainWindow):
             c.set_design(design.polygon)
         for c in self._all_3d_canvases():
             c.set_design(design.polygon, stock_depth_mm=stock_depth)
+            # Fresh design with no saved project view — snap each 3D canvas
+            # back to the default orientation so the design is centred and
+            # framed at the X+ right / Y+ away / 30° tilt convention.
+            c.reset_view()
         self._update_size_overlays(design, params)
         self._refresh_finished_canvas()
         self._controls.set_design_summary(
@@ -1492,6 +1519,11 @@ class MainWindow(QMainWindow):
         stock_depth = params.pocket_depth_mm + params.glue_gap_mm
         for c in self._all_3d_canvases():
             c.set_design(self._design.polygon, stock_depth_mm=stock_depth)
+            # Snap the 3D camera back to the default orientation whenever
+            # fresh toolpaths are computed. Without this the camera might
+            # be left over from a different design / pre-resize state and
+            # the freshly-computed paths render at an awkward angle.
+            c.reset_view()
         self._update_size_overlays(self._design, params)
         self._refresh_finished_canvas()
 

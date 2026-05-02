@@ -54,6 +54,11 @@ class ProjectFile:
     # edit invalidates it cleanly without keeping stale chains.
     cached_result: dict | None = None
     cache_signature: str | None = None
+    # Last 3D view orientation the user looked at when the project was
+    # saved. Restored on open so the user lands at the same camera angle
+    # / zoom they left at. None on legacy files → fall back to the canvas
+    # default (X right, Y away, tilted 30° back from top-down).
+    view_orientation: dict | None = None
 
 
 def _params_to_dict(p: InlayParams) -> dict:
@@ -169,6 +174,7 @@ def save_project(path: str | Path, project: ProjectFile) -> None:
         "plunge_user_edited": project.plunge_user_edited,
         "cached_result": project.cached_result,
         "cache_signature": project.cache_signature,
+        "view_orientation": project.view_orientation,
     }
     Path(path).write_text(json.dumps(data, indent=2))
 
@@ -200,6 +206,7 @@ def load_project(path: str | Path) -> ProjectFile:
         plunge_user_edited=bool(data.get("plunge_user_edited", False)),
         cached_result=data.get("cached_result"),
         cache_signature=data.get("cache_signature"),
+        view_orientation=data.get("view_orientation"),
     )
     # v5 → v6: any global speed override gets attached to the saved finishing
     # bit so the user's prior tuning carries forward into the new per-bit

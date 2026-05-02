@@ -58,8 +58,8 @@ class Canvas3D(gl.GLViewWidget):
         super().__init__(parent)
         self.setBackgroundColor(pg.mkColor(BG))
         self.opts["distance"] = 250
-        self.opts["elevation"] = 28
-        self.opts["azimuth"] = 35
+        self.opts["elevation"] = self.DEFAULT_ELEVATION
+        self.opts["azimuth"] = self.DEFAULT_AZIMUTH
         # Discoverability — pyqtgraph's GLViewWidget supports rotate/pan/zoom
         # but the user has to know the mouse mappings. The tooltip surfaces
         # them on hover so panning isn't a hidden feature.
@@ -404,16 +404,59 @@ class Canvas3D(gl.GLViewWidget):
 
     # ----------------------------------------------------------------- view
 
+    # Default 3D camera orientation. Picked so:
+    #   * X axis runs horizontally with +X to the right of the screen,
+    #   * Y axis runs into the screen (away from the operator) — same sense
+    #     as the physical bed when standing in front of the machine,
+    #   * Z axis points up,
+    #   * tilted back 30° from a perfect top-down view so depth is visible.
+    # ``azimuth = 270`` puts the camera at the -Y side (south of the bed)
+    # looking toward +Y. ``elevation = 60`` is 60° above horizon = 30° down
+    # from straight-overhead.
+    DEFAULT_AZIMUTH = 270.0
+    DEFAULT_ELEVATION = 60.0
+
     def _reset_camera(self) -> None:
         w, h = self._extent
         self.opts["distance"] = max(w, h, 80) * 2.0
         self.opts["center"] = pg.Vector(0, 0, -self._stock_depth_mm / 2)
-        self.opts["elevation"] = 28
-        self.opts["azimuth"] = 35
+        self.opts["elevation"] = self.DEFAULT_ELEVATION
+        self.opts["azimuth"] = self.DEFAULT_AZIMUTH
         self.update()
 
     def reset_view(self) -> None:
         self._reset_camera()
+
+    # ---------- view orientation save / restore (project file) -----------
+
+    def get_view_orientation(self) -> dict:
+        """Snapshot enough camera state to faithfully restore the view."""
+        c = self.opts.get("center")
+        return {
+            "elevation": float(self.opts.get("elevation", self.DEFAULT_ELEVATION)),
+            "azimuth": float(self.opts.get("azimuth", self.DEFAULT_AZIMUTH)),
+            "distance": float(self.opts.get("distance", 250.0)),
+            "center_x": float(c.x()) if c is not None else 0.0,
+            "center_y": float(c.y()) if c is not None else 0.0,
+            "center_z": float(c.z()) if c is not None else 0.0,
+        }
+
+    def set_view_orientation(self, view: dict | None) -> None:
+        """Apply a saved orientation. ``None`` or invalid input → no-op."""
+        if not view:
+            return
+        try:
+            self.opts["elevation"] = float(view.get("elevation", self.DEFAULT_ELEVATION))
+            self.opts["azimuth"] = float(view.get("azimuth", self.DEFAULT_AZIMUTH))
+            self.opts["distance"] = float(view.get("distance", 250.0))
+            self.opts["center"] = pg.Vector(
+                float(view.get("center_x", 0.0)),
+                float(view.get("center_y", 0.0)),
+                float(view.get("center_z", 0.0)),
+            )
+            self.update()
+        except (TypeError, ValueError):
+            pass
 
     def _zoom_in(self) -> None:
         self.opts["distance"] = max(20.0, self.opts["distance"] / 1.25)
