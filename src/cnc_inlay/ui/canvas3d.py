@@ -431,8 +431,17 @@ class Canvas3D(gl.GLViewWidget):
     DEFAULT_ELEVATION = 60.0
 
     def _reset_camera(self) -> None:
+        # Camera distance must always frame the BED envelope, not just the
+        # current design — otherwise on a fresh window (no design loaded,
+        # default extent of 60×60 mm) the camera would sit INSIDE the
+        # 270×150 bed rectangle and clip out the grid + screw circles. The
+        # axis-label GLTextItems render at fixed screen-pixel size and
+        # stay visible even when clipped, which is exactly the bug
+        # ("3D shows only X/Y numbers"). max() ensures we always pull
+        # back far enough to see the whole bed.
         w, h = self._extent
-        self.opts["distance"] = max(w, h, 80) * 2.0
+        framing = max(w, h, BED_WIDTH_MM, BED_HEIGHT_MM)
+        self.opts["distance"] = framing * 2.0
         self.opts["center"] = pg.Vector(0, 0, -self._stock_depth_mm / 2)
         self.opts["elevation"] = self.DEFAULT_ELEVATION
         self.opts["azimuth"] = self.DEFAULT_AZIMUTH
