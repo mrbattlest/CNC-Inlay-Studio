@@ -46,7 +46,7 @@ from cnc_inlay.core.units import load_settings, save_settings
 # License API uses this to look the key up under your account. Until this is
 # filled in, license verification will always fail (trial-only mode).
 GUMROAD_PRODUCT_PERMALINK: str = "cncinlaystudio"
-GUMROAD_PRODUCT_URL: str = "https://malcolmrose.gumroad.com/l/cncinlaystudio"
+GUMROAD_PRODUCT_URL: str = "https://malcolmross.gumroad.com/l/cncinlaystudio"
 # ---------------------------------------------------------------------------
 
 TRIAL_DAYS = 7
