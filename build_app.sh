@@ -85,6 +85,70 @@ uv run pyinstaller \
 [[ -d "$APP_BUNDLE" ]] || fail "Expected $APP_BUNDLE to exist after PyInstaller run; aborting."
 echo "✓ Built $APP_BUNDLE"
 
+# ── 3.5. Prune unused PySide6 frameworks + plugins ─────────────────────────
+# `--collect-all PySide6` pulls in EVERY Qt framework, including
+# QtWebEngineCore (~285 MB embedded Chromium) and the entire QML/Quick/3D
+# stack we don't use. Pruning takes the bundle from ~830 MB → ~280 MB and
+# the DMG from ~360 MB → ~120 MB (also fits under wrangler's 300 MiB cap).
+#
+# To verify a framework can be safely pruned, grep src/ for it: if nothing
+# imports `from PySide6.<Foo>`, it's safe to delete.
+step "Pruning unused PySide6 frameworks"
+QT_LIB_DIR="$APP_BUNDLE/Contents/Frameworks/PySide6/Qt/lib"
+QT_PLUGINS_DIR="$APP_BUNDLE/Contents/Frameworks/PySide6/Qt/plugins"
+QT_QML_DIR="$APP_BUNDLE/Contents/Frameworks/PySide6/Qt/qml"
+PYSIDE_PKG_DIR="$APP_BUNDLE/Contents/Frameworks/PySide6"
+
+# Frameworks we actually use (grep `from PySide6` in src/ → these names):
+KEEP_FRAMEWORKS=(
+    QtCore QtGui QtWidgets QtOpenGL QtOpenGLWidgets QtSvg QtDBus QtPrintSupport
+)
+
+if [[ -d "$QT_LIB_DIR" ]]; then
+    for fw in "$QT_LIB_DIR"/Qt*.framework; do
+        name=$(basename "$fw" .framework)
+        keep=false
+        for k in "${KEEP_FRAMEWORKS[@]}"; do
+            [[ "$name" == "$k" ]] && keep=true && break
+        done
+        $keep || rm -rf "$fw"
+    done
+    # Drop the matching PySide6 .abi3.so binding modules too — they'd error on
+    # import but we never touch them.
+    for so in "$PYSIDE_PKG_DIR"/Qt*.abi3.so; do
+        [[ -f "$so" ]] || continue
+        name=$(basename "$so" .abi3.so)
+        keep=false
+        for k in "${KEEP_FRAMEWORKS[@]}"; do
+            [[ "$name" == "$k" ]] && keep=true && break
+        done
+        $keep || rm -f "$so"
+    done
+fi
+[[ -d "$QT_QML_DIR" ]] && rm -rf "$QT_QML_DIR"
+if [[ -d "$QT_PLUGINS_DIR" ]]; then
+    rm -rf "$QT_PLUGINS_DIR/qmltooling" \
+           "$QT_PLUGINS_DIR/scenegraph" \
+           "$QT_PLUGINS_DIR/3dinputdevices" \
+           "$QT_PLUGINS_DIR/3drenderers" \
+           "$QT_PLUGINS_DIR/sceneparsers" \
+           "$QT_PLUGINS_DIR/geometryloaders" \
+           "$QT_PLUGINS_DIR/renderers" \
+           "$QT_PLUGINS_DIR/renderplugins" \
+           "$QT_PLUGINS_DIR/qmllint" \
+           "$QT_PLUGINS_DIR/multimedia" \
+           "$QT_PLUGINS_DIR/position" \
+           "$QT_PLUGINS_DIR/canbus" \
+           "$QT_PLUGINS_DIR/sqldrivers" \
+           "$QT_PLUGINS_DIR/webview" 2>/dev/null || true
+fi
+# Drop a few transitive Python deps we don't call.
+rm -rf "$APP_BUNDLE/Contents/Frameworks/cryptography" \
+       "$APP_BUNDLE/Contents/Frameworks/cffi" 2>/dev/null || true
+
+NEW_SIZE=$(du -sh "$APP_BUNDLE" | awk '{print $1}')
+echo "✓ Pruned bundle size: $NEW_SIZE"
+
 # ── 4. Build the DMG ──────────────────────────────────────────────────────
 step "Packaging $DMG_PATH"
 rm -f "$DMG_PATH"

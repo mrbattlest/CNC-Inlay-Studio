@@ -20,14 +20,12 @@ from PySide6.QtWidgets import (
 )
 
 import cnc_inlay
-from cnc_inlay.updater import GITHUB_OWNER, GITHUB_REPO
 
 
 _LUNYEE_AMAZON_URL = (
     "https://www.amazon.com/LUNYEE-MAX-All-Metal-Switches-Emergency-Stop/dp/"
     "B0C6WQWX3R/"
 )
-_GITHUB_REPO_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}"
 _AUTHOR_NAME = "Malcolm Ross"
 _AUTHOR_EMAIL = "ross.malcolm@gmail.com"
 
@@ -122,9 +120,7 @@ class AboutDialog(QDialog):
             "<h3 style='margin-top:14px; margin-bottom:4px;'>Created by</h3>"
             f"<p>{_AUTHOR_NAME} &nbsp; "
             f"&middot; &nbsp; "
-            f"<a href='mailto:{_AUTHOR_EMAIL}'>{_AUTHOR_EMAIL}</a> &nbsp; "
-            f"&middot; &nbsp; "
-            f"<a href='{_GITHUB_REPO_URL}'>Source on GitHub</a></p>"
+            f"<a href='mailto:{_AUTHOR_EMAIL}'>{_AUTHOR_EMAIL}</a></p>"
         )
         body.setTextFormat(Qt.RichText)
         body.setWordWrap(True)

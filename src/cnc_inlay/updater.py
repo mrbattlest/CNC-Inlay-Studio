@@ -1,23 +1,31 @@
-"""GitHub-Releases-backed update checker.
+"""Cloudflare R2-backed update checker.
 
-The app's version (``cnc_inlay.__version__``) is compared against the latest
-GitHub release's tag. If a newer one exists, the user is shown a dialog with
-the release notes and a button to download the .dmg.
+A small JSON manifest hosted on a public R2 bucket describes the latest
+release; the app fetches it, compares ``cnc_inlay.__version__`` against the
+manifest's ``version``, and offers an "Update Available" dialog with the
+release notes plus a button to download the .dmg.
 
-Why GitHub Releases instead of a hand-rolled manifest:
-- One artefact (the .dmg) and one release page covers everything — no separate
-  manifest.json to keep in sync.
-- Release notes are written in GitHub's UI and rendered as markdown there;
-  we just pass the body through to the dialog.
-- ``GET /repos/.../releases/latest`` returns assets + body + tag in one call
-  with no auth (unauthenticated GitHub API allows 60 requests/hr per IP, far
-  more than a desktop app needs).
+Manifest schema (see make-release.sh which writes it)::
+
+    {
+      "version": "0.1.1",
+      "release_date": "2026-05-02",
+      "release_notes": "Markdown-formatted release notes...",
+      "dmg_url": "https://pub-xxx.r2.dev/cnc-inlay-studio/CNC-Inlay-Studio-0.1.1.dmg"
+    }
+
+Why R2 instead of GitHub Releases:
+- The source repo is private; the GitHub Releases API requires auth on
+  private repos and we don't want to bake an auth token into the app.
+- Cloudflare R2 has free egress, so DMG downloads from however many users
+  cost nothing.
+- A single static manifest URL is the simplest possible auth-free contract.
 
 Does NOT auto-replace the .app bundle. The downloaded .dmg is opened in
-Finder and the user drags the new app over the old one in /Applications,
-then quits + reopens. Atomic in-place replacement of the running .app on
-macOS is brittle (Gatekeeper, signature verification, NSWorkspace caching);
-the manual drag is what every Mac user already knows.
+the system browser; the user drags the new app over the old one in
+/Applications, then quits + reopens. Atomic in-place replacement of the
+running .app on macOS is brittle (Gatekeeper, signature verification,
+NSWorkspace caching); the manual drag is what every Mac user already knows.
 """
 from __future__ import annotations
 
@@ -33,31 +41,30 @@ import cnc_inlay
 from cnc_inlay.core.units import load_settings, save_settings
 
 
-# --- Configure these to point at your GitHub repo ----------------------------
-# When you create the repo, change these two strings. The updater silently
-# does nothing when the configured repo doesn't exist (404) so leaving the
-# placeholders in place doesn't break the app for offline / first-run users.
-GITHUB_OWNER = "mrbattlest"
-GITHUB_REPO = "CNC-Inlay-Studio"
-# -----------------------------------------------------------------------------
+# --- Configure to point at your manifest URL --------------------------------
+# The manifest lives at:
+#     {R2_PUBLIC_URL}/{R2_PREFIX}/manifest.json
+# Bake-in time: change R2_PUBLIC_URL if you move buckets or switch to a
+# custom domain (e.g. https://updates.tapawingo.com).
+R2_PUBLIC_URL = "https://pub-2f6bb3641a7848fdb6d18a515f004ea6.r2.dev"
+R2_PREFIX = "cnc-inlay-studio"
+# ----------------------------------------------------------------------------
 
-_API_LATEST_URL = (
-    "https://api.github.com/repos/{owner}/{repo}/releases/latest"
-)
+MANIFEST_URL = f"{R2_PUBLIC_URL}/{R2_PREFIX}/manifest.json"
+
 _USER_AGENT = "CNC-Inlay-Studio-Updater"
 _NETWORK_TIMEOUT_SEC = 10
-_DMG_ASSET_RE = re.compile(r"\.dmg$", re.IGNORECASE)
 _SETTINGS_KEY_SKIP_VERSION = "updater_skipped_version"
 _SETTINGS_KEY_AUTO_CHECK = "updater_auto_check"
 
 
 @dataclass
 class ReleaseInfo:
-    version: str           # e.g. "0.2.0" (tag with leading 'v' stripped)
-    name: str              # release title
-    notes: str             # release body (markdown)
-    dmg_url: str | None    # direct download for the .dmg, or None if no .dmg asset
-    html_url: str          # GitHub release page (fallback if no dmg)
+    version: str           # e.g. "0.2.0"
+    name: str              # release title (defaults to "v{version}")
+    notes: str             # release notes body (markdown)
+    dmg_url: str | None    # direct download URL for the .dmg
+    html_url: str          # fallback URL (same as dmg_url for R2)
 
 
 # ---------------------------------------------------------------------- semver
@@ -83,22 +90,20 @@ def is_newer(remote: str, local: str) -> bool:
     return _parse_version(remote) > _parse_version(local)
 
 
-# ------------------------------------------------------------------- GitHub API
+# ------------------------------------------------------------- manifest fetch
 
 def fetch_latest_release(
-    owner: str = GITHUB_OWNER,
-    repo: str = GITHUB_REPO,
+    manifest_url: str = MANIFEST_URL,
     timeout: float = _NETWORK_TIMEOUT_SEC,
 ) -> ReleaseInfo | None:
-    """Hit the GitHub Releases API for the latest non-draft, non-prerelease
-    release. Returns None on any network / parse error or 404 (e.g. the repo
-    has no releases yet or the configured repo doesn't exist).
+    """GET the R2-hosted manifest.json and parse it. Returns None on any
+    network / parse error (e.g. the bucket isn't reachable or the manifest
+    isn't published yet for a brand-new install).
     """
-    url = _API_LATEST_URL.format(owner=owner, repo=repo)
     req = urllib.request.Request(
-        url,
+        manifest_url,
         headers={
-            "Accept": "application/vnd.github+json",
+            "Accept": "application/json",
             "User-Agent": _USER_AGENT,
         },
     )
@@ -108,23 +113,16 @@ def fetch_latest_release(
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
         return None
 
-    tag = payload.get("tag_name") or ""
-    if not tag:
+    version = (payload.get("version") or "").strip()
+    if not version:
         return None
-    version = tag[1:] if tag.lower().startswith("v") else tag
-
-    dmg_url: str | None = None
-    for asset in payload.get("assets") or []:
-        if _DMG_ASSET_RE.search(asset.get("name") or ""):
-            dmg_url = asset.get("browser_download_url")
-            break
-
+    dmg_url = payload.get("dmg_url") or None
     return ReleaseInfo(
         version=version,
-        name=payload.get("name") or tag,
-        notes=payload.get("body") or "",
+        name=payload.get("name") or f"v{version}",
+        notes=payload.get("release_notes") or "",
         dmg_url=dmg_url,
-        html_url=payload.get("html_url") or "",
+        html_url=dmg_url or "",
     )
 
 
