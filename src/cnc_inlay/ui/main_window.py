@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QCoreApplication, Qt
+from PySide6.QtCore import QCoreApplication, Qt, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QDialog,
@@ -423,6 +423,13 @@ class MainWindow(QMainWindow):
         self._controls.parametersChanged.connect(self._refresh_finished_canvas)
         self._controls.parametersChanged.connect(self._refresh_stock_outlines)
         self._controls.designSizeChanged.connect(self._on_design_size_changed)
+        # Updater results: signals are emitted from the daemon worker thread
+        # in updater.py; Qt's auto-connection (sender in worker thread,
+        # receiver self in main thread) queues delivery to the main-thread
+        # event loop so the slot runs there. Without this bridge, a worker
+        # thread touching widgets crashes the app on macOS.
+        self._updaterResultLoud.connect(self._on_updater_result_loud)
+        self._updaterResultQuiet.connect(self._on_updater_result_quiet)
 
         # Simulator wiring.
         self._control_panel.simulatePocketRequested.connect(
@@ -818,6 +825,19 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------- update checks
 
+    # Cross-thread bridge for the updater. The check runs on a daemon thread
+    # so the UI stays responsive; its result has to be marshalled back to
+    # the main thread before any dialog is shown — touching widgets from a
+    # non-Qt thread crashes the app instantly. The previous attempt used
+    # ``QTimer.singleShot(0, fn)`` from the worker thread WITHOUT a parent;
+    # PySide6 leaves that timer's affinity ambiguous and on macOS it
+    # crashed the process the moment the user clicked the menu item. The
+    # @Slot decorators + emit-from-worker pattern below is the canonical
+    # Qt thread-safe handoff.
+
+    _updaterResultLoud = Signal(object)
+    _updaterResultQuiet = Signal(object)
+
     def _maybe_check_for_updates_silently(self) -> None:
         """Auto-check on launch. Honours the user's auto-check preference and
         the per-version Skip flag. Failures (no network etc.) are silent so
@@ -825,42 +845,36 @@ class MainWindow(QMainWindow):
         from cnc_inlay.updater import check_for_update_async, get_auto_check_enabled
         if not get_auto_check_enabled():
             return
-        check_for_update_async(self._handle_update_check_result_quiet)
+        check_for_update_async(self._updaterResultQuiet.emit)
 
     def _on_check_for_updates_manual(self) -> None:
         """Help → Check for Updates… — user-initiated, surfaces every outcome
         (up-to-date, error, update available)."""
         from cnc_inlay.updater import check_for_update_async
-        check_for_update_async(self._handle_update_check_result_loud)
+        check_for_update_async(self._updaterResultLoud.emit)
 
-    def _handle_update_check_result_quiet(self, result) -> None:
-        """Silent variant: only pop UI when there's an actionable update the
-        user hasn't already skipped. Marshals back to the main thread."""
-        from PySide6.QtCore import QTimer as _QTimer
-        def _on_main_thread():
-            if result.is_update_available and not result.is_skipped_by_user:
-                from cnc_inlay.ui.update_dialog import show_update_available_dialog
-                show_update_available_dialog(self, result)
-        _QTimer.singleShot(0, _on_main_thread)
+    def _on_updater_result_quiet(self, result) -> None:
+        """Silent variant — runs in the main thread (queued from the worker
+        signal). Only opens UI when there's an actionable update."""
+        if result.is_update_available and not result.is_skipped_by_user:
+            from cnc_inlay.ui.update_dialog import show_update_available_dialog
+            show_update_available_dialog(self, result)
 
-    def _handle_update_check_result_loud(self, result) -> None:
-        """Manual variant: also pop a 'you're up to date' / 'check failed'
-        notice so the user knows the click did something."""
-        from PySide6.QtCore import QTimer as _QTimer
-        def _on_main_thread():
-            from cnc_inlay.ui.update_dialog import (
-                show_check_failed_dialog,
-                show_up_to_date_dialog,
-                show_update_available_dialog,
-            )
-            if result.release is None:
-                show_check_failed_dialog(self)
-                return
-            if result.is_update_available:
-                show_update_available_dialog(self, result)
-            else:
-                show_up_to_date_dialog(self, result.current_version)
-        _QTimer.singleShot(0, _on_main_thread)
+    def _on_updater_result_loud(self, result) -> None:
+        """Manual variant — runs in the main thread. Always shows a dialog so
+        the user knows the menu click did something."""
+        from cnc_inlay.ui.update_dialog import (
+            show_check_failed_dialog,
+            show_up_to_date_dialog,
+            show_update_available_dialog,
+        )
+        if result.release is None:
+            show_check_failed_dialog(self)
+            return
+        if result.is_update_available:
+            show_update_available_dialog(self, result)
+        else:
+            show_up_to_date_dialog(self, result.current_version)
 
     def _on_generate_requested(self) -> None:
         from cnc_inlay.ai.secrets_store import has_api_key
