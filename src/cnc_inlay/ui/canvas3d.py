@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from shapely.geometry import MultiPolygon, Polygon
 
@@ -29,7 +29,7 @@ from cnc_inlay.ui.theme import (
     SHAPE_LINE,
     TRAVEL,
 )
-from cnc_inlay.ui.zoom_toolbar import ZoomToolbar
+from cnc_inlay.ui.zoom_toolbar import ViewModeToggle, ZoomToolbar
 
 ViewMode = str  # "pocket" | "plug"
 
@@ -54,6 +54,11 @@ _BED_RGBA = (0.49, 0.65, 0.58, 0.85)  # muted teal/green
 
 
 class Canvas3D(gl.GLViewWidget):
+    # Emitted when the user clicks the floating "3D | Top" toggle. Value is
+    # "3d" or "top". MainWindow connects this to switch the parent
+    # QStackedWidget between the 3D and 2D canvases.
+    viewModeToggled = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setBackgroundColor(pg.mkColor(BG))
@@ -92,6 +97,15 @@ class Canvas3D(gl.GLViewWidget):
         self._grid.setColor(pg.mkColor(GRID))
         self.addItem(self._grid)
         self._draw_bed()
+
+        # 3D / Top-down toggle — sits at the very top-right corner; zoom
+        # toolbar slots in just below it. Replaces the old nested QTabWidget.
+        # The ``viewModeToggled`` signal is forwarded to whoever wires the
+        # parent QStackedWidget (MainWindow).
+        self._view_toggle = ViewModeToggle(self, initial="3d")
+        self._view_toggle.modeChanged.connect(self.viewModeToggled.emit)
+        self._view_toggle.show()
+        self._view_toggle.raise_()
 
         self._zoom_toolbar = ZoomToolbar(self)
         self._zoom_toolbar.zoomIn.connect(self._zoom_in)
@@ -468,7 +482,11 @@ class Canvas3D(gl.GLViewWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._zoom_toolbar.position_top_right(self.width(), self.height())
+        self._view_toggle.position_top_right(self.width(), self.height())
+        self._zoom_toolbar.position_top_right(
+            self.width(), self.height(),
+            top_offset=self._view_toggle.height() + 6,
+        )
         self._info_overlay.position_bottom_left(self.width(), self.height())
         self._position_bit_legend()
 

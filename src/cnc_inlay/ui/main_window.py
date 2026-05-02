@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSplitter,
     QStatusBar,
+    QStackedWidget,
     QTabWidget,
 )
 
@@ -281,22 +282,37 @@ class MainWindow(QMainWindow):
         self._plug_canvas2d = PreviewCanvas(self)
         self._plug_canvas2d.set_view_mode("plug")
 
-        pocket_subtabs = QTabWidget(self)
-        pocket_subtabs.addTab(self._pocket_canvas3d, "3D")
-        pocket_subtabs.addTab(self._pocket_canvas2d, "Top-down")
+        # 3D + 2D canvases live in a QStackedWidget; the floating
+        # ViewModeToggle on each canvas flips between them. Replaces the
+        # nested QTabWidget that used to consume 30 px of vertical space
+        # showing two redundant tab strips on every preview.
+        self._pocket_stack = QStackedWidget(self)
+        self._pocket_stack.addWidget(self._pocket_canvas3d)  # index 0 = 3D
+        self._pocket_stack.addWidget(self._pocket_canvas2d)  # index 1 = top-down
+        self._pocket_canvas3d.viewModeToggled.connect(self._on_pocket_view_mode_changed)
+        self._pocket_canvas2d.viewModeToggled.connect(self._on_pocket_view_mode_changed)
 
-        plug_subtabs = QTabWidget(self)
-        plug_subtabs.addTab(self._plug_canvas3d, "3D")
-        plug_subtabs.addTab(self._plug_canvas2d, "Top-down")
+        self._plug_stack = QStackedWidget(self)
+        self._plug_stack.addWidget(self._plug_canvas3d)
+        self._plug_stack.addWidget(self._plug_canvas2d)
+        self._plug_canvas3d.viewModeToggled.connect(self._on_plug_view_mode_changed)
+        self._plug_canvas2d.viewModeToggled.connect(self._on_plug_view_mode_changed)
 
         # The third top-level tab: assembled inlay rendered with wood-species
         # textures so the user can sanity-check colour pairings before cutting.
         self._finished_canvas = FinishedCanvas(self)
 
         self._main_tabs = QTabWidget(self)
-        self._main_tabs.addTab(pocket_subtabs, "Pocket")
-        self._main_tabs.addTab(plug_subtabs, "Plug")
+        self._main_tabs.addTab(self._pocket_stack, "Pocket")
+        self._main_tabs.addTab(self._plug_stack, "Plug")
         self._main_tabs.addTab(self._finished_canvas, "Finished")
+        # 40% larger tab font so Pocket / Plug / Finished read as primary
+        # navigation, not nested controls. Bold for the same reason.
+        self._main_tabs.setStyleSheet(
+            "QTabBar::tab { font-size: 16px; font-weight: 600; "
+            "padding: 10px 20px; min-width: 90px; }"
+            "QTabBar::tab:selected { color: #f5a623; }"
+        )
 
         self._controls = ControlsPanel(
             self._bits, self._materials, InlayParams(), self
@@ -667,6 +683,22 @@ class MainWindow(QMainWindow):
 
     def _all_2d_canvases(self):
         return (self._pocket_canvas2d, self._plug_canvas2d)
+
+    # ---------- 3D / Top-down toggle handlers (replace nested QTabWidgets)
+
+    def _on_pocket_view_mode_changed(self, mode: str) -> None:
+        idx = 0 if mode == "3d" else 1
+        self._pocket_stack.setCurrentIndex(idx)
+        # Keep both toggles in sync — the user might click on either canvas
+        # but the active toggle should always reflect the visible side.
+        self._pocket_canvas3d._view_toggle.set_mode(mode, _emit=False)
+        self._pocket_canvas2d._view_toggle.set_mode(mode, _emit=False)
+
+    def _on_plug_view_mode_changed(self, mode: str) -> None:
+        idx = 0 if mode == "3d" else 1
+        self._plug_stack.setCurrentIndex(idx)
+        self._plug_canvas3d._view_toggle.set_mode(mode, _emit=False)
+        self._plug_canvas2d._view_toggle.set_mode(mode, _emit=False)
 
     def _refresh_stock_outlines(self) -> None:
         """Re-render the dashed stock rectangles when the user edits W/H values

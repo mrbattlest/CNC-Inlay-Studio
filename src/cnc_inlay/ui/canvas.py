@@ -6,7 +6,7 @@ cut (yellow). Travel/rapid moves are dashed grey.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QGraphicsItem,
@@ -33,7 +33,7 @@ from cnc_inlay.ui.theme import (
     SHAPE_LINE,
     TRAVEL,
 )
-from cnc_inlay.ui.zoom_toolbar import ZoomToolbar
+from cnc_inlay.ui.zoom_toolbar import ViewModeToggle, ZoomToolbar
 
 # Lunyee 3018 PRO MAX bed envelope.
 BED_WIDTH_MM = 270.0   # Lunyee 3018 PRO MAX measured X travel
@@ -110,6 +110,11 @@ def build_bit_legend_html(
 
 
 class PreviewCanvas(QGraphicsView):
+    # Mirrors Canvas3D.viewModeToggled — when the user clicks the floating
+    # 3D | Top toggle on this 2D canvas, MainWindow flips the parent
+    # QStackedWidget back to the 3D side.
+    viewModeToggled = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._scene = QGraphicsScene(self)
@@ -180,6 +185,14 @@ class PreviewCanvas(QGraphicsView):
         self._vcarve_items: list[QGraphicsPathItem] = []
         self._pocket_items: list[QGraphicsPathItem] = []
         self._boundary_items: list[QGraphicsPathItem] = []
+
+        # 3D / Top-down toggle — replaces the old nested QTabWidget. Sits
+        # at the very top-right; zoom toolbar slots in just below it.
+        # Initialised to "top" because this canvas IS the top-down view.
+        self._view_toggle = ViewModeToggle(self, initial="top")
+        self._view_toggle.modeChanged.connect(self.viewModeToggled.emit)
+        self._view_toggle.show()
+        self._view_toggle.raise_()
 
         self._zoom_toolbar = ZoomToolbar(self)
         self._zoom_toolbar.zoomIn.connect(self._zoom_in)
@@ -458,7 +471,11 @@ class PreviewCanvas(QGraphicsView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._fit()
-        self._zoom_toolbar.position_top_right(self.width(), self.height())
+        self._view_toggle.position_top_right(self.width(), self.height())
+        self._zoom_toolbar.position_top_right(
+            self.width(), self.height(),
+            top_offset=self._view_toggle.height() + 6,
+        )
         self._info_overlay.position_bottom_left(self.width(), self.height())
         self._position_bit_legend()
 
