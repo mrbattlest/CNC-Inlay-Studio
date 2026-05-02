@@ -398,11 +398,16 @@ class MainWindow(QMainWindow):
         prefs_act.triggered.connect(self._on_open_preferences)
         settings_menu.addAction(prefs_act)
 
-        # Help menu — Check for Updates lives here. macOS automatically
-        # promotes "About"/"Quit" into the application menu, but a Check for
-        # Updates item is conventional under Help (Sparkle apps add it to
-        # the app menu via Apple-special-string magic; we keep it simple).
+        # Help menu — About + Check for Updates. macOS auto-promotes any
+        # action whose menuRole is AboutRole into the application menu (the
+        # bold leftmost menu) AND keeps it visible under Help, which is the
+        # convention every native Mac app follows.
         help_menu = menu.addMenu("&Help")
+        about_act = QAction("About CNC Inlay Studio", self)
+        about_act.setMenuRole(QAction.AboutRole)  # macOS app-menu promotion
+        about_act.triggered.connect(self._on_show_about)
+        help_menu.addAction(about_act)
+        help_menu.addSeparator()
         check_updates_act = QAction("Check for Updates…", self)
         check_updates_act.triggered.connect(self._on_check_for_updates_manual)
         help_menu.addAction(check_updates_act)
@@ -806,6 +811,10 @@ class MainWindow(QMainWindow):
     def _on_open_preferences(self) -> None:
         dlg = PreferencesDialog(self)
         dlg.exec()
+
+    def _on_show_about(self) -> None:
+        from cnc_inlay.ui.about_dialog import show_about_dialog
+        show_about_dialog(self)
 
     # ---------------------------------------------------------- update checks
 
