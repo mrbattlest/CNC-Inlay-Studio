@@ -1,0 +1,998 @@
+"""End-to-end inlay generation for the straight-wall pocket-inlay technique.
+
+For each side, we run a single endmill clearing pass:
+
+  - **Pocket** (carved into the base wood) clears the *inside* of the design
+    polygon to depth ``pocket_depth``. The result is a set of cavities matching
+    the design shape (frame + each letter / region).
+
+  - **Plug** (carved into the contrasting wood) clears the *complement* — a
+    bounding rectangle around the design, minus the design itself — to depth
+    ``pocket_depth + glue_gap``. The result is the design left raised above a
+    cleared backer area. The plug is glued on top of the pocket and the backer
+    wood planed off to reveal a flush inlay.
+
+No mirroring, no flipping. Same orientation throughout. The boundary offset
+controls the size of the bounding rectangle around the design.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable
+
+from shapely.affinity import translate as shp_translate
+from shapely.geometry import MultiPolygon, Polygon, box
+from shapely.validation import make_valid
+
+from cnc_inlay.core.job import Bit, Design, InlayParams, Job, Material, Origin
+from cnc_inlay.core.recommend import Recommendation, recommend_bits
+from cnc_inlay.gcode.emitter import Section, emit_gcode
+from cnc_inlay.geometry.medial_axis import Skeleton
+from cnc_inlay.geometry.shape import RasterTransform
+from cnc_inlay.toolpath.optimize import (
+    merge_close_loops,
+    order_chains,
+    total_air_length_mm,
+    total_cut_length_mm,
+)
+from cnc_inlay.toolpath.passes import split_into_passes
+from cnc_inlay.geometry.offset import offset_polygon, pocket_offset_rings
+from cnc_inlay.toolpath.pocket import compute_endmill_pocket_clear
+from cnc_inlay.core.inlay_minimums import FragilityReport, check_plug_fragility
+from cnc_inlay.sim.simulator import build_segments, total_duration_seconds
+from cnc_inlay.toolpath.vcarve import Chain
+
+
+def _max_inset_mm(geom: Polygon | MultiPolygon, probe_steps_mm: float = 0.25) -> float:
+    """Largest inward offset that still leaves a non-empty polygon.
+
+    Approximates the thinnest dimension of the polygon; useful for deciding
+    whether an endmill can clear a region.
+    """
+    last_good = 0.0
+    delta = probe_steps_mm
+    # Coarse sweep first to bound, then refine.
+    for delta in [0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0]:
+        if offset_polygon(geom, -delta) is not None:
+            last_good = delta
+        else:
+            break
+    # Refine in a tighter loop near the boundary.
+    lo, hi = last_good, last_good + (delta - last_good if last_good < delta else 1.0)
+    for _ in range(8):
+        mid = (lo + hi) / 2
+        if offset_polygon(geom, -mid) is not None:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def _coverage_report(
+    geom: Polygon | MultiPolygon,
+    endmill_diameter_mm: float,
+    step_over_frac: float = 0.5,
+) -> CoverageReport:
+    polys: list[Polygon] = (
+        list(geom.geoms) if isinstance(geom, MultiPolygon) else [geom]
+    )
+    radius = endmill_diameter_mm / 2.0
+    full = 0
+    partial = 0
+    uncleared = 0
+    thinnest = float("inf")
+    for poly in polys:
+        if poly.is_empty:
+            continue
+        thin = _max_inset_mm(poly)
+        thinnest = min(thinnest, thin)
+        rings = pocket_offset_rings(poly, endmill_diameter_mm, step_over_frac)
+        n = len(rings)
+        if n == 0 or thin < radius:
+            uncleared += 1
+        elif n <= 2:
+            partial += 1
+        else:
+            full += 1
+    if thinnest == float("inf"):
+        thinnest = 0.0
+    # Recommend a bit small enough to fit ≥3 rings in the thinnest region:
+    # 3 rings means radius + 2 * step_over < thinnest. Solve for diameter.
+    # diameter*(1/2 + 2*frac) < thinnest  → diameter < thinnest / (0.5 + 2*frac)
+    denom = 0.5 + 2 * step_over_frac
+    recommended = max(0.5, thinnest / max(denom, 0.1))
+    return CoverageReport(
+        total_regions=len(polys),
+        fully_cleared=full,
+        partially_cleared=partial,
+        uncleared=uncleared,
+        thinnest_region_max_inset_mm=thinnest,
+        recommended_max_diameter_mm=recommended,
+    )
+
+
+def _shift_chains(chains: list[Chain], dx: float, dy: float) -> list[Chain]:
+    return [[(x + dx, y + dy, z) for x, y, z in c] for c in chains]
+
+
+def _apply_speed_overrides(
+    material: Material, params: InlayParams, bit: Bit | None = None
+) -> Material:
+    """Return a Material with effective speeds for ``bit`` applied.
+
+    Resolution order: per-bit override → global override → material default.
+    Falls back gracefully when ``bit`` is None or unknown.
+    """
+    bit_override = (
+        params.bit_speed_overrides.get(bit.name) if bit is not None else None
+    )
+
+    def pick(bit_val, global_val, default_val):
+        if bit_val is not None:
+            return bit_val
+        if global_val is not None:
+            return global_val
+        return default_val
+
+    return Material(
+        name=material.name,
+        feed_mm_min=pick(
+            bit_override.feed_mm_min if bit_override else None,
+            params.feed_override_mm_min,
+            material.feed_mm_min,
+        ),
+        plunge_mm_min=pick(
+            bit_override.plunge_mm_min if bit_override else None,
+            params.plunge_override_mm_min,
+            material.plunge_mm_min,
+        ),
+        rpm=pick(
+            bit_override.rpm if bit_override else None,
+            params.spindle_rpm_override,
+            material.rpm,
+        ),
+        max_doc_mm=material.max_doc_mm,
+    )
+
+
+def _center_polygon(geom: Polygon | MultiPolygon) -> Polygon | MultiPolygon:
+    minx, miny, maxx, maxy = geom.bounds
+    cx = (minx + maxx) / 2
+    cy = (miny + maxy) / 2
+    return shp_translate(geom, xoff=-cx, yoff=-cy)
+
+
+def _mirror_x(geom: Polygon | MultiPolygon) -> Polygon | MultiPolygon:
+    """Mirror centred geometry across the Y axis (negate X)."""
+    from shapely.affinity import scale as shp_scale
+    return shp_scale(geom, xfact=-1, yfact=1, origin=(0, 0))
+
+
+def _design_complement(
+    geom: Polygon | MultiPolygon,
+    padding_mm: float,
+    *,
+    stock_width_mm: float = 0.0,
+    stock_height_mm: float = 0.0,
+) -> Polygon | MultiPolygon | None:
+    """Bounding rectangle of the design padded by ``padding_mm``, minus the design.
+
+    When ``stock_width_mm`` and ``stock_height_mm`` are both > 0, the bounding
+    rectangle is intersected with the user's actual wood — centered on the
+    origin — so the plug toolpath never traverses air outside the stock. This
+    makes cuts faster and avoids the bit lunging into clamps past the wood
+    edge.
+    """
+    minx, miny, maxx, maxy = geom.bounds
+    bounding = box(
+        minx - padding_mm, miny - padding_mm,
+        maxx + padding_mm, maxy + padding_mm,
+    )
+    if stock_width_mm > 0 and stock_height_mm > 0:
+        # Stock is centered on origin (the design is already centered).
+        sx, sy = stock_width_mm / 2.0, stock_height_mm / 2.0
+        stock_rect = box(-sx, -sy, sx, sy)
+        bounding = bounding.intersection(stock_rect)
+    complement = bounding.difference(geom)
+    if not complement.is_valid:
+        complement = make_valid(complement)
+    if complement.is_empty:
+        return None
+    if isinstance(complement, (Polygon, MultiPolygon)):
+        return complement
+    return None
+
+
+@dataclass
+class CoverageReport:
+    """How well the chosen endmill clears each design region."""
+    total_regions: int = 0
+    fully_cleared: int = 0
+    partially_cleared: int = 0   # 1 or 2 rings — incomplete
+    uncleared: int = 0           # too thin for the bit
+    thinnest_region_max_inset_mm: float = 0.0
+    recommended_max_diameter_mm: float = 0.0  # so the thinnest region clears with ≥3 rings
+
+    @property
+    def has_warning(self) -> bool:
+        return self.uncleared > 0 or self.partially_cleared > 0
+
+
+@dataclass
+class Side:
+    """Computed result for one side of the inlay (pocket or plug)."""
+    clear_preview: list[Chain] = field(default_factory=list)  # endmill clearing chains
+    chains_full: list[Chain] = field(default_factory=list)
+    gcode: str = ""
+    cut_length_mm: float = 0.0
+    air_length_mm: float = 0.0
+    skeleton: Skeleton | None = None
+    transform: RasterTransform | None = None
+    # Multi-bit breakdown: list of (bit, chains, role, duration_s) tuples in
+    # cut order. ``role`` is "Roughing" for all but the last entry,
+    # "Finishing" for the last. ``duration_s`` is the estimated wall-clock
+    # cut time for that bit, computed from chain length / feed rate. Empty
+    # list for empty Sides. Used by the UI to show colour-coded legends with
+    # per-bit times and a stacked-bar timeline.
+    bit_chains: list[tuple[Bit, list[Chain], str, float]] = field(default_factory=list)
+
+
+@dataclass
+class StockFitReport:
+    """Per-side check: does the design (and any boundary offset) fit on the
+    user's wood? Empty list of issues = everything fits."""
+    pocket_issues: list[str] = field(default_factory=list)
+    plug_issues: list[str] = field(default_factory=list)
+
+    @property
+    def has_issues(self) -> bool:
+        return bool(self.pocket_issues or self.plug_issues)
+
+
+@dataclass
+class PipelineResult:
+    pocket: Side
+    plug: Side
+    coverage: CoverageReport | None = None
+    recommendation: Recommendation | None = None
+    fragility: "FragilityReport | None" = None
+    stock_fit: StockFitReport | None = None
+    # Geometry of what will actually be visible as plug wood in the assembled
+    # inlay, accounting for which features the bits can physically reach.
+    # Thin features narrower than the smallest pocket bit's diameter remain
+    # uncut (so they show as pocket wood); narrow gaps in the design narrower
+    # than the smallest plug bit cannot be carved out around the plug, so they
+    # merge into the surrounding plug. xy_tolerance further shrinks the plug.
+    finished_geometry: Polygon | MultiPolygon | None = None
+
+
+def _emit_side(
+    chains_ordered: list[Chain],
+    chains_passes: list[Chain],
+    gcode_chains: list[Chain],
+    *,
+    design: Design,
+    endmill: Bit,
+    material: Material,
+    params: InlayParams,
+    is_plug: bool,
+    title_prefix: str,
+) -> Side:
+    role = "plug" if is_plug else "pocket"
+    title = f"{title_prefix} - {role}"
+    section_label = (
+        "Plug clearance (around design)"
+        if is_plug
+        else "Pocket clearance (inside design)"
+    )
+    effective_material = _apply_speed_overrides(material, params, endmill)
+    section = Section(
+        bit=endmill, material=effective_material, chains=gcode_chains, label=section_label
+    )
+    gcode = emit_gcode([section], title=title, params=params, is_plug=is_plug)
+    # Single-bit duration estimate, mirroring the multi-bit path.
+    try:
+        single_duration_s = total_duration_seconds(build_segments(
+            chains_passes,
+            feed_mm_min=effective_material.feed_mm_min,
+            plunge_mm_min=effective_material.plunge_mm_min,
+            safe_z_mm=params.safe_z_mm,
+        )) if chains_passes else 0.0
+    except Exception:
+        single_duration_s = 0.0
+    return Side(
+        clear_preview=chains_ordered,
+        chains_full=chains_passes,
+        gcode=gcode,
+        cut_length_mm=total_cut_length_mm(chains_passes),
+        air_length_mm=total_air_length_mm(chains_passes),
+        bit_chains=(
+            [(endmill, chains_passes, "Finishing", single_duration_s)]
+            if chains_passes else []
+        ),
+    )
+
+
+def _tool_change_park_xy_mm(
+    design: Design, params: InlayParams, is_plug: bool
+) -> tuple[float, float]:
+    """Pick a parking position in the work-coordinate frame that sits over
+    UNCUT wood, so the operator can re-zero Z against a real surface during a
+    tool change.
+
+    - Pocket: the bit cuts INSIDE the design polygon. Park just past the
+      design's bounding box on the +X side (typically uncut stock).
+    - Plug: the bit cuts the COMPLEMENT around the design. The design polygon
+      itself is left intact (it becomes the inlay piece). Park at (0, 0) —
+      the centre of the design — which is uncut.
+    """
+    half_w = design.width_mm / 2.0
+    half_h = design.height_mm / 2.0
+    if is_plug:
+        # Centre of the (centred) design = guaranteed uncut for the plug side.
+        return (0.0, 0.0)
+    # Pocket: park 10 mm past the design's right edge, mid-height.
+    park_x = half_w + 10.0
+    park_y = 0.0
+    # If the user gave pocket stock dimensions, clamp the park inside them so
+    # we don't drive the bit off the wood.
+    if params.pocket_stock_width_mm > 0:
+        max_x = params.pocket_stock_width_mm / 2.0 - 5.0
+        park_x = min(park_x, max_x)
+    if params.origin == Origin.BOTTOM_LEFT:
+        # In bottom-left mode the chains were shifted by (half_w, half_h).
+        park_x += half_w
+        park_y += half_h
+    return (park_x, park_y)
+
+
+def _emit_multi_bit_side(
+    bit_chains: list[tuple[Bit, list[Chain]]],
+    *,
+    design: Design,
+    material: Material,
+    params: InlayParams,
+    is_plug: bool,
+    title_prefix: str,
+) -> Side:
+    """Emit one side's G-code from a sequence of (bit, chains) pairs.
+
+    Falls back to an empty Side if the sequence is empty (e.g. plug
+    complement was None). The emitter inserts the M0 + tool-change comments
+    between bits automatically.
+    """
+    role = "plug" if is_plug else "pocket"
+    title = f"{title_prefix} - {role}"
+    label_root = (
+        "Plug clearance (around design)" if is_plug
+        else "Pocket clearance (inside design)"
+    )
+    if not bit_chains:
+        return Side(clear_preview=[], chains_full=[], gcode="", cut_length_mm=0, air_length_mm=0)
+
+    sections: list[Section] = []
+    all_preview: list[Chain] = []
+    all_passes: list[Chain] = []
+    bit_chain_breakdown: list[tuple[Bit, list[Chain], str]] = []
+    for i, (bit, chains) in enumerate(bit_chains):
+        # Each bit gets its own per-bit speed override resolved here so a
+        # roughing bit can run faster than the finishing bit on the same side.
+        bit_material = _apply_speed_overrides(material, params, bit)
+        # Each bit gets its own labelled section. Multi-bit runs label by step
+        # ("Roughing 1/3: 3.0 mm endmill") so the user can match the M0
+        # tool-change comments to the actual cut order.
+        if len(bit_chains) > 1:
+            step = f"{i + 1}/{len(bit_chains)}"
+            kind = "Finish" if i == len(bit_chains) - 1 else "Rough"
+            section_label = f"{label_root} — {kind} {step}: {bit.name}"
+        else:
+            section_label = label_root
+        sections.append(Section(
+            bit=bit, material=bit_material, chains=chains, label=section_label,
+        ))
+        all_preview.extend(chains)
+        all_passes.extend(chains)
+        role = "Finishing" if i == len(bit_chains) - 1 else "Roughing"
+        # Per-bit duration estimate uses each bit's own effective speeds.
+        try:
+            segs = build_segments(
+                chains,
+                feed_mm_min=bit_material.feed_mm_min,
+                plunge_mm_min=bit_material.plunge_mm_min,
+                safe_z_mm=params.safe_z_mm,
+            )
+            duration_s = total_duration_seconds(segs)
+        except Exception:
+            duration_s = 0.0
+        bit_chain_breakdown.append((bit, chains, role, duration_s))
+
+    park_xy = _tool_change_park_xy_mm(design, params, is_plug)
+    gcode = emit_gcode(
+        sections, title=title, params=params, is_plug=is_plug,
+        tool_change_park_xy_mm=park_xy,
+    )
+    return Side(
+        clear_preview=all_preview,
+        chains_full=all_passes,
+        gcode=gcode,
+        cut_length_mm=total_cut_length_mm(all_passes),
+        air_length_mm=total_air_length_mm(all_passes),
+        bit_chains=bit_chain_breakdown,
+    )
+
+
+def _resolve_bit_sequence(
+    finishing: Bit, roughing_names: list[str], bit_library: list[Bit] | None
+) -> list[Bit]:
+    """Build the largest-first ordered bit sequence for a side.
+
+    The finishing bit is always last (it does the fine detail / boundary
+    finish). Roughing bits come first, sorted by diameter descending. Bits
+    whose diameter is ≤ the finishing bit's are silently dropped — they'd be
+    redundant with the finishing pass.
+    """
+    if not roughing_names or not bit_library:
+        return [finishing]
+    by_name = {b.name: b for b in bit_library}
+    rough_bits: list[Bit] = []
+    for name in roughing_names:
+        b = by_name.get(name)
+        if b is not None and b.diameter_mm > finishing.diameter_mm:
+            rough_bits.append(b)
+    rough_bits.sort(key=lambda b: -b.diameter_mm)
+    return rough_bits + [finishing]
+
+
+def _medial_axis_cleanup_chains(
+    region: Polygon | MultiPolygon,
+    bit_diameter_mm: float,
+    depth_mm: float,
+    *,
+    resolution_mm: float = 0.15,
+) -> list[Chain]:
+    """Generate cleanup chains for a residual region the offset-rings clearer
+    can't process — typically thin crescents along curved boundaries where
+    ``region.buffer(-bit_radius)`` is empty so no offset rings can be drawn.
+
+    Strategy: rasterise each residual piece, compute its medial-axis skeleton,
+    return one chain per skeleton branch. The bit's center follows the
+    centerline; its disk sweeps the full residual width because the residual's
+    local width is at most ``bit_diameter`` (otherwise the standard offset-
+    rings algorithm would have handled it).
+
+    Filters applied to keep chain count manageable:
+      * Skip residual pieces whose area is below ``bit_diameter²/2`` — the bit
+        can't sweep enough new ground to justify a tool change.
+      * Skip skeleton chains shorter than ``bit_diameter`` — same reason.
+      * Simplify each chain (Douglas-Peucker at ¼ bit_radius) so pixel-stepped
+        zig-zag becomes a clean polyline with one tenth the points.
+
+    Returns chains in (x, y, z) format with z = -depth_mm (single-pass; the
+    caller's ``split_into_passes`` will divide as needed).
+    """
+    if region.is_empty or region.area <= 0:
+        return []
+    bit_r = bit_diameter_mm / 2.0
+    min_piece_area = (bit_diameter_mm ** 2) / 2.0
+    min_chain_len_mm = bit_diameter_mm  # 1× diameter, anything shorter is wasted plunge
+    simplify_tol = bit_r * 0.25
+    pieces = list(region.geoms) if isinstance(region, MultiPolygon) else [region]
+
+    def chain_length(coords: list[tuple[float, float]]) -> float:
+        L = 0.0
+        for a, b in zip(coords[:-1], coords[1:]):
+            L += ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5
+        return L
+
+    from shapely.geometry import LineString
+    out: list[Chain] = []
+    for piece in pieces:
+        if piece.area < min_piece_area:
+            continue
+        try:
+            from cnc_inlay.geometry.medial_axis import compute_skeleton
+            from cnc_inlay.geometry.shape import rasterize
+            from cnc_inlay.toolpath.vcarve import extract_chains_px
+            mask, transform = rasterize(piece, resolution_mm=resolution_mm, pad_px=2)
+            if not mask.any():
+                continue
+            skel = compute_skeleton(mask, prune_spurs=False)
+            px_chains = extract_chains_px(skel.skeleton)
+        except Exception:
+            continue
+        # rasterize() returns a transform whose (0,0) is the PIECE's geometric
+        # centre — not the design's. We need world-frame coords, so re-add the
+        # piece's centre. (This was the bug that made cleanup chains land at
+        # the origin instead of where the residual lives.)
+        piece_minx, piece_miny, piece_maxx, piece_maxy = piece.bounds
+        cx_world = (piece_minx + piece_maxx) / 2.0
+        cy_world = (piece_miny + piece_maxy) / 2.0
+        for px_chain in px_chains:
+            if len(px_chain) < 2:
+                continue
+            import numpy as _np
+            rows = _np.array([p[0] for p in px_chain], dtype=_np.float64)
+            cols = _np.array([p[1] for p in px_chain], dtype=_np.float64)
+            xs, ys = transform.pixel_to_mm(rows, cols)
+            coords = [
+                (float(x + cx_world), float(y + cy_world))
+                for x, y in zip(xs, ys)
+            ]
+            # Douglas-Peucker: collapses pixel-stepped runs to straight lines
+            # without losing fidelity at the bit's resolution. Drops chain
+            # point count by ~10× on typical cleanup residuals.
+            try:
+                ls = LineString(coords).simplify(simplify_tol, preserve_topology=False)
+                if ls.is_empty:
+                    continue
+                if ls.geom_type == "LineString":
+                    coords = list(ls.coords)
+                elif ls.geom_type == "MultiLineString":
+                    # take the longest segment if simplify split it
+                    longest = max(ls.geoms, key=lambda g: g.length)
+                    coords = list(longest.coords)
+            except Exception:
+                pass  # keep raw coords if simplify fails
+            if chain_length(coords) < min_chain_len_mm:
+                continue
+            out.append([(x, y, float(-depth_mm)) for x, y in coords])
+    return out
+
+
+def _chains_swept_area(
+    chains: list[Chain], bit_radius_mm: float
+) -> Polygon | MultiPolygon | None:
+    """Return the actual XY area a bit's disk sweeps as it traverses ``chains``.
+
+    Each chain is approximated as a LineString and dilated by ``bit_radius_mm``
+    so the result is the union of the bit's footprint along every cut path.
+    Used by rest-machining to compute residual = region - what-was-actually-swept,
+    so the next (smaller) bit catches the thin crescents that the larger bit's
+    offset-ring chains didn't fully cover along curved boundaries.
+
+    Unions in batches (chunks of 200, snapped to a 5 µm grid) — running one
+    big union over the thousands of segments a complex design produces makes
+    GEOS throw TopologyException about half the time.
+    """
+    if not chains:
+        return None
+    from shapely.geometry import LineString
+    import shapely
+
+    swept: list = []
+    for chain in chains:
+        if len(chain) < 2:
+            continue
+        try:
+            ls = LineString([(x, y) for (x, y, _z) in chain])
+            swept.append(ls.buffer(bit_radius_mm, resolution=4))
+        except Exception:
+            pass
+    if not swept:
+        return None
+    chunks: list = []
+    for i in range(0, len(swept), 200):
+        try:
+            chunks.append(shapely.union_all(swept[i:i + 200], grid_size=0.005))
+        except Exception:
+            for piece in swept[i:i + 200]:
+                chunks.append(piece)
+    try:
+        result = shapely.union_all(chunks, grid_size=0.01)
+    except Exception:
+        # Fallback: pairwise union via buffer(0). Slower but doesn't blow up.
+        result = chunks[0]
+        for c in chunks[1:]:
+            try:
+                result = result.union(c).buffer(0)
+            except Exception:
+                pass
+    if result.is_empty:
+        return None
+    if isinstance(result, (Polygon, MultiPolygon)):
+        return result
+    return None
+
+
+def _rest_machine_chains(
+    region: Polygon | MultiPolygon,
+    sequence: list[Bit],
+    *,
+    depth_mm: float,
+    step_over_frac: float,
+    pass_depth_mm: float,
+    progress_cb: Callable[[float, str], None] | None = None,
+    progress_lo: float = 0.0,
+    progress_hi: float = 100.0,
+) -> list[tuple[Bit, list[Chain]]]:
+    """Run rest machining on ``region`` with the given largest-first bit sequence.
+
+    Residual passed to each bit = ``region - union of every previous bit's
+    actual swept disks along its chains``. The previous-generation code used
+    the morphological opening of ``region`` with the previous bit's radius,
+    which assumes the offset-ring chains perfectly covered every reachable
+    point. In practice they leave thin crescent-shaped gaps along curved
+    boundaries (because adjacent rings don't fully overlap there), and those
+    gaps then weren't seen as residual — so the next bit didn't pick them up.
+    Computing residual from the actual swept geometry catches those crescents.
+
+    Bits that contribute no new chains are dropped from the returned list, so
+    we never pause for a tool change that does nothing.
+    """
+    out: list[tuple[Bit, list[Chain]]] = []
+    cumulative_cleared: Polygon | MultiPolygon | None = None
+    n_bits = max(len(sequence), 1)
+    span = progress_hi - progress_lo
+
+    def _report(bit_idx: int, sub_pct: float, msg: str) -> None:
+        if progress_cb is None:
+            return
+        # Each bit gets an equal slice of (lo..hi). sub_pct is 0..1 within
+        # that slice. So overall pct = lo + (bit_idx + sub_pct) / n_bits * span.
+        overall = progress_lo + (bit_idx + sub_pct) / n_bits * span
+        try:
+            progress_cb(overall, msg)
+        except Exception:
+            pass
+
+    for idx, bit in enumerate(sequence):
+        is_final_bit = (idx == len(sequence) - 1)
+        radius = bit.diameter_mm / 2.0
+        _report(idx, 0.05, f"{bit.name}: computing residual region")
+        # What this bit needs to clear: everything not already swept by a
+        # larger bit. If first in sequence, that's the full original region.
+        if cumulative_cleared is None or cumulative_cleared.is_empty:
+            target = region
+        else:
+            try:
+                target = region.difference(cumulative_cleared).buffer(0)
+            except Exception:
+                target = region
+        if target.is_empty:
+            continue
+
+        _report(idx, 0.10, f"{bit.name}: computing offset rings")
+        try:
+            raw = compute_endmill_pocket_clear(
+                target,
+                endmill_diameter_mm=bit.diameter_mm,
+                depth_mm=depth_mm,
+                step_over_frac=step_over_frac,
+            )
+        except Exception:
+            raw = []
+
+        _report(idx, 0.50, f"{bit.name}: ordering chains")
+        ordered_main = order_chains(raw) if raw else []
+        ordered_main = (
+            merge_close_loops(ordered_main, bit.diameter_mm * 1.05)
+            if ordered_main else []
+        )
+
+        cleanup_chains: list[Chain] = []
+        if is_final_bit:
+            _report(idx, 0.65, f"{bit.name}: cleaning up thin residuals")
+            rings_swept = _chains_swept_area(ordered_main, radius)
+            try:
+                leftover = (
+                    target.difference(rings_swept).buffer(0)
+                    if rings_swept is not None else target
+                )
+            except Exception:
+                leftover = target
+            if not leftover.is_empty and leftover.area > (radius ** 2):
+                try:
+                    cleanup_chains = _medial_axis_cleanup_chains(
+                        leftover, bit.diameter_mm, depth_mm,
+                    )
+                except Exception:
+                    cleanup_chains = []
+
+        if not ordered_main and not cleanup_chains:
+            # This bit can't fit anywhere new — skip it (no tool change needed).
+            continue
+        _report(idx, 0.80, f"{bit.name}: optimizing toolpath order")
+        combined = ordered_main + cleanup_chains
+        combined = order_chains(combined)
+        combined = merge_close_loops(combined, bit.diameter_mm * 2.5)
+        full = split_into_passes(combined, pass_depth_mm)
+        out.append((bit, full))
+
+        _report(idx, 0.92, f"{bit.name}: computing swept area")
+        swept = _chains_swept_area(combined, radius)
+        if swept is None:
+            continue
+        if cumulative_cleared is None:
+            cumulative_cleared = swept
+        else:
+            try:
+                cumulative_cleared = cumulative_cleared.union(swept).buffer(0)
+            except Exception:
+                pass  # keep prior cumulative; worst case = some overlap next pass
+    return out
+
+
+def _generate_pocket_side(
+    design: Design,
+    centered_geom: Polygon | MultiPolygon,
+    endmill: Bit,
+    material: Material,
+    params: InlayParams,
+    title_prefix: str,
+    bit_library: list[Bit] | None = None,
+    progress_cb: Callable[[float, str], None] | None = None,
+    progress_lo: float = 0.0,
+    progress_hi: float = 100.0,
+) -> Side:
+    sequence = _resolve_bit_sequence(
+        endmill, params.pocket_roughing_bits, bit_library
+    )
+    bit_chains = _rest_machine_chains(
+        centered_geom, sequence,
+        depth_mm=params.pocket_depth_mm,
+        step_over_frac=params.pocket_step_over_frac,
+        pass_depth_mm=params.pass_depth_mm,
+        progress_cb=progress_cb,
+        progress_lo=progress_lo,
+        progress_hi=progress_hi,
+    )
+
+    if params.origin == Origin.BOTTOM_LEFT:
+        dx = design.width_mm / 2
+        dy = design.height_mm / 2
+        bit_chains = [
+            (b, _shift_chains(c, dx, dy)) for b, c in bit_chains
+        ]
+
+    return _emit_multi_bit_side(
+        bit_chains,
+        design=design, material=material, params=params,
+        is_plug=False, title_prefix=title_prefix,
+    )
+
+
+def _generate_plug_side(
+    design: Design,
+    centered_geom: Polygon | MultiPolygon,
+    endmill: Bit,
+    material: Material,
+    params: InlayParams,
+    title_prefix: str,
+    bit_library: list[Bit] | None = None,
+    progress_cb: Callable[[float, str], None] | None = None,
+    progress_lo: float = 0.0,
+    progress_hi: float = 100.0,
+) -> Side:
+    mirrored = _mirror_x(centered_geom)
+    # XY tolerance: shrink the plug feature by xy_tolerance_mm per side so
+    # the plug fits the pocket with a glue layer at every wall. The pocket
+    # still gets cut to the design's nominal size; only the plug shrinks.
+    if params.xy_tolerance_mm > 0:
+        try:
+            shrunk = mirrored.buffer(-params.xy_tolerance_mm).buffer(0)
+            if not shrunk.is_empty:
+                mirrored = shrunk
+            # If buffer ate the design entirely, fall back to original (the
+            # tolerance was set too large for the design's smallest feature).
+        except Exception:
+            pass
+    complement = _design_complement(
+        mirrored, params.boundary_offset_mm,
+        stock_width_mm=params.plug_stock_width_mm,
+        stock_height_mm=params.plug_stock_height_mm,
+    )
+    if complement is None:
+        return _emit_multi_bit_side(
+            [], design=design, material=material, params=params,
+            is_plug=True, title_prefix=title_prefix,
+        )
+
+    sequence = _resolve_bit_sequence(
+        endmill, params.plug_roughing_bits, bit_library
+    )
+    bit_chains = _rest_machine_chains(
+        complement, sequence,
+        depth_mm=params.pocket_depth_mm + params.glue_gap_mm,
+        step_over_frac=params.pocket_step_over_frac,
+        pass_depth_mm=params.pass_depth_mm,
+        progress_cb=progress_cb,
+        progress_lo=progress_lo,
+        progress_hi=progress_hi,
+    )
+
+    if params.origin == Origin.BOTTOM_LEFT:
+        dx = design.width_mm / 2
+        dy = design.height_mm / 2
+        bit_chains = [
+            (b, _shift_chains(c, dx, dy)) for b, c in bit_chains
+        ]
+
+    return _emit_multi_bit_side(
+        bit_chains,
+        design=design, material=material, params=params,
+        is_plug=True, title_prefix=title_prefix,
+    )
+
+
+def _smallest_bit_diameter_mm(
+    endmill: Bit, roughing_names: list[str], bit_library: list[Bit] | None
+) -> float:
+    """Return the smallest bit diameter actually used on a side.
+
+    Pocket and plug each cut with their own ``endmill`` plus zero or more
+    roughing bits picked by name from ``bit_library``. The smallest of those
+    is what determines the finest feature that can be reached.
+    """
+    diameters = [endmill.diameter_mm]
+    if bit_library and roughing_names:
+        by_name = {b.name: b for b in bit_library}
+        for name in roughing_names:
+            bit = by_name.get(name)
+            if bit is not None:
+                diameters.append(bit.diameter_mm)
+    return min(diameters)
+
+
+def _achievable_finished_geometry(
+    centered: Polygon | MultiPolygon,
+    pocket_bit_diameter_mm: float,
+    plug_bit_diameter_mm: float,
+    xy_tolerance_mm: float,
+) -> Polygon | MultiPolygon | None:
+    """Compute the visible plug area in the assembled inlay.
+
+    Three effects are modelled:
+    - Pocket bit can't reach into design features narrower than its diameter,
+      so those areas stay as pocket wood (morphological opening).
+    - Plug bit can't carve gaps in the surrounding wood narrower than its
+      diameter, so narrow gaps in the design get filled (closing of design).
+    - xy_tolerance shrinks the plug everywhere so a glue layer fits.
+    """
+    r_pocket = pocket_bit_diameter_mm / 2.0
+    r_plug = plug_bit_diameter_mm / 2.0
+    try:
+        pocket_clear = centered.buffer(-r_pocket).buffer(r_pocket).buffer(0)
+    except Exception:
+        pocket_clear = centered
+    try:
+        plug_remains = centered.buffer(r_plug).buffer(-r_plug).buffer(0)
+    except Exception:
+        plug_remains = centered
+    try:
+        visible = pocket_clear.intersection(plug_remains).buffer(0)
+    except Exception:
+        visible = pocket_clear
+    if xy_tolerance_mm > 0:
+        try:
+            visible = visible.buffer(-xy_tolerance_mm).buffer(0)
+        except Exception:
+            pass
+    if visible.is_empty:
+        return None
+    if isinstance(visible, (Polygon, MultiPolygon)):
+        return visible
+    return None
+
+
+def run_pipeline(
+    job: Job,
+    *,
+    bit_library: list[Bit] | None = None,
+    progress_cb: Callable[[float, str], None] | None = None,
+) -> PipelineResult:
+    """Generate pocket + plug toolpaths and G-code for a Job.
+
+    ``progress_cb(pct, msg)`` (optional) reports phase progress 0..100 so the
+    caller can show a real percent bar instead of an indeterminate spinner.
+    Phase budget: 0–2% setup, 2–48% pocket side, 48–94% plug side,
+    94–100% coverage / fragility / stock-fit / recommendation reports.
+    """
+    def _report(pct: float, msg: str) -> None:
+        if progress_cb is not None:
+            try:
+                progress_cb(pct, msg)
+            except Exception:
+                pass
+
+    _report(1, "Centring design…")
+    title = f"CNC Inlay Studio - {job.design.basename}"
+    centered = _center_polygon(job.design.polygon)
+
+    _report(2, "Generating pocket toolpaths…")
+    pocket = _generate_pocket_side(
+        job.design, centered, job.endmill, job.pocket_material, job.params, title,
+        bit_library=bit_library,
+        progress_cb=progress_cb, progress_lo=2.0, progress_hi=48.0,
+    )
+    _report(48, "Generating plug toolpaths…")
+    plug = _generate_plug_side(
+        job.design, centered, job.endmill, job.plug_material, job.params, title,
+        bit_library=bit_library,
+        progress_cb=progress_cb, progress_lo=48.0, progress_hi=94.0,
+    )
+
+    _report(95, "Coverage check…")
+    coverage = _coverage_report(
+        centered, job.endmill.diameter_mm, job.params.pocket_step_over_frac
+    )
+    _report(96, "Plug-fragility check…")
+    fragility = check_plug_fragility(centered, job.endmill.diameter_mm)
+    _report(97, "Stock-fit check…")
+    stock_fit = _check_stock_fit(centered, job.params)
+
+    recommendation: Recommendation | None = None
+    if bit_library:
+        _report(98, "Bit recommendation…")
+        from cnc_inlay.geometry.medial_axis import compute_skeleton
+        from cnc_inlay.geometry.shape import rasterize
+
+        try:
+            mask, _ = rasterize(centered, resolution_mm=job.params.resolution_mm)
+            skel = compute_skeleton(mask)
+            recommendation = recommend_bits(bit_library, skel, job.params.resolution_mm)
+        except Exception:
+            recommendation = None
+
+    _report(99, "Finishing up…")
+    pocket_bit_d = _smallest_bit_diameter_mm(
+        job.endmill, job.params.pocket_roughing_bits, bit_library
+    )
+    plug_bit_d = _smallest_bit_diameter_mm(
+        job.endmill, job.params.plug_roughing_bits, bit_library
+    )
+    finished_geometry = _achievable_finished_geometry(
+        centered, pocket_bit_d, plug_bit_d, job.params.xy_tolerance_mm
+    )
+
+    _report(100, "Done.")
+    return PipelineResult(
+        pocket=pocket, plug=plug, coverage=coverage,
+        recommendation=recommendation, fragility=fragility,
+        stock_fit=stock_fit,
+        finished_geometry=finished_geometry,
+    )
+
+
+def _check_stock_fit(
+    centered: Polygon | MultiPolygon, params: InlayParams
+) -> StockFitReport:
+    """Verify the design + plug boundary offset both fit on their respective
+    pieces of wood. 0-valued stock dimensions mean "skip this check."""
+    minx, miny, maxx, maxy = centered.bounds
+    design_w = maxx - minx
+    design_h = maxy - miny
+    issues = StockFitReport()
+
+    if params.pocket_stock_width_mm > 0 and params.pocket_stock_height_mm > 0:
+        if design_w > params.pocket_stock_width_mm + 1e-3:
+            issues.pocket_issues.append(
+                f"Design width ({design_w:.1f} mm) > pocket stock width "
+                f"({params.pocket_stock_width_mm:.1f} mm). Resize the design "
+                f"or use wider stock."
+            )
+        if design_h > params.pocket_stock_height_mm + 1e-3:
+            issues.pocket_issues.append(
+                f"Design height ({design_h:.1f} mm) > pocket stock height "
+                f"({params.pocket_stock_height_mm:.1f} mm). Resize the design "
+                f"or use taller stock."
+            )
+
+    if params.plug_stock_width_mm > 0 and params.plug_stock_height_mm > 0:
+        # Plug needs the design + the boundary-offset margin all around.
+        plug_w_required = design_w + 2 * params.boundary_offset_mm
+        plug_h_required = design_h + 2 * params.boundary_offset_mm
+        if plug_w_required > params.plug_stock_width_mm + 1e-3:
+            issues.plug_issues.append(
+                f"Design ({design_w:.1f} mm) + 2× boundary offset "
+                f"({params.boundary_offset_mm:.1f} mm) = {plug_w_required:.1f} mm "
+                f"> plug stock width ({params.plug_stock_width_mm:.1f} mm). "
+                f"Reduce boundary offset, resize, or use wider plug stock."
+            )
+        if plug_h_required > params.plug_stock_height_mm + 1e-3:
+            issues.plug_issues.append(
+                f"Design ({design_h:.1f} mm) + 2× boundary offset "
+                f"({params.boundary_offset_mm:.1f} mm) = {plug_h_required:.1f} mm "
+                f"> plug stock height ({params.plug_stock_height_mm:.1f} mm). "
+                f"Reduce boundary offset, resize, or use taller plug stock."
+            )
+    return issues

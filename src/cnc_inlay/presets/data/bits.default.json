@@ -1,0 +1,12 @@
+[
+  { "name": "0.8 mm endmill", "type": "endmill", "angle_deg": 180, "shank_mm": 3.175, "diameter_mm": 0.8, "max_rpm": 12000, "flutes": 2 },
+  { "name": "1.0 mm endmill", "type": "endmill", "angle_deg": 180, "shank_mm": 3.175, "diameter_mm": 1.0, "max_rpm": 12000, "flutes": 2 },
+  { "name": "1.2 mm endmill", "type": "endmill", "angle_deg": 180, "shank_mm": 3.175, "diameter_mm": 1.2, "max_rpm": 12000, "flutes": 2 },
+  { "name": "1.5 mm endmill", "type": "endmill", "angle_deg": 180, "shank_mm": 3.175, "diameter_mm": 1.5, "max_rpm": 12000, "flutes": 2 },
+  { "name": "1.8 mm endmill", "type": "endmill", "angle_deg": 180, "shank_mm": 3.175, "diameter_mm": 1.8, "max_rpm": 12000, "flutes": 2 },
+  { "name": "2.0 mm endmill", "type": "endmill", "angle_deg": 180, "shank_mm": 3.175, "diameter_mm": 2.0, "max_rpm": 12000, "flutes": 2 },
+  { "name": "2.2 mm endmill", "type": "endmill", "angle_deg": 180, "shank_mm": 3.175, "diameter_mm": 2.2, "max_rpm": 12000, "flutes": 2 },
+  { "name": "2.5 mm endmill", "type": "endmill", "angle_deg": 180, "shank_mm": 3.175, "diameter_mm": 2.5, "max_rpm": 12000, "flutes": 2 },
+  { "name": "2.8 mm endmill", "type": "endmill", "angle_deg": 180, "shank_mm": 3.175, "diameter_mm": 2.8, "max_rpm": 12000, "flutes": 2 },
+  { "name": "3.0 mm endmill", "type": "endmill", "angle_deg": 180, "shank_mm": 3.175, "diameter_mm": 3.0, "max_rpm": 12000, "flutes": 2 }
+]

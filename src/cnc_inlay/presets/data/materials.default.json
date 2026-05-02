@@ -1,0 +1,13 @@
+[
+  { "name": "Walnut",     "feed_mm_min": 600, "plunge_mm_min": 200, "rpm": 10000, "max_doc_mm": 1.5, "janka_lbf": 1010 },
+  { "name": "Maple",      "feed_mm_min": 500, "plunge_mm_min": 180, "rpm": 10000, "max_doc_mm": 1.2, "janka_lbf": 1450 },
+  { "name": "Oak",        "feed_mm_min": 600, "plunge_mm_min": 200, "rpm": 10000, "max_doc_mm": 1.5, "janka_lbf": 1290 },
+  { "name": "Cherry",     "feed_mm_min": 700, "plunge_mm_min": 220, "rpm": 10000, "max_doc_mm": 1.5, "janka_lbf": 950  },
+  { "name": "Birch",      "feed_mm_min": 700, "plunge_mm_min": 220, "rpm": 10000, "max_doc_mm": 1.5, "janka_lbf": 1260 },
+  { "name": "Padauk",     "feed_mm_min": 600, "plunge_mm_min": 200, "rpm": 10000, "max_doc_mm": 1.3, "janka_lbf": 1725 },
+  { "name": "Mahogany",   "feed_mm_min": 700, "plunge_mm_min": 220, "rpm": 10000, "max_doc_mm": 1.5, "janka_lbf": 800  },
+  { "name": "Purpleheart","feed_mm_min": 500, "plunge_mm_min": 180, "rpm": 10000, "max_doc_mm": 1.2, "janka_lbf": 2520 },
+  { "name": "Redwood",    "feed_mm_min": 800, "plunge_mm_min": 250, "rpm": 12000, "max_doc_mm": 1.8, "janka_lbf": 420  },
+  { "name": "MDF",        "feed_mm_min": 900, "plunge_mm_min": 300, "rpm": 12000, "max_doc_mm": 2.0, "janka_lbf": 700  },
+  { "name": "Plywood",    "feed_mm_min": 800, "plunge_mm_min": 250, "rpm": 12000, "max_doc_mm": 1.8, "janka_lbf": 1200 }
+]
