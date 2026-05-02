@@ -100,15 +100,30 @@ DMG_LOCAL="dist/CNC Inlay Studio.dmg"
 DMG_SIZE=$(du -h "$DMG_LOCAL" | awk '{print $1}')
 echo "✓ DMG built: $DMG_SIZE"
 
-# ── 3. Upload .dmg to R2 ──────────────────────────────────────────────────
+# ── 3. Upload .dmg to R2 (versioned + "latest" alias) ─────────────────────
+# We upload two copies: the versioned one (for archival + the manifest's
+# dmg_url field) and a "latest" alias at a stable URL. The Gumroad product
+# page can link to the "latest" URL once and never need updating per
+# release — buyers always download the most recent version on first
+# install, then the in-app updater takes over from there.
 DMG_KEY="$R2_PREFIX/CNC-Inlay-Studio-$VERSION.dmg"
 DMG_PUBLIC_URL="$R2_PUBLIC_URL/$DMG_KEY"
+LATEST_KEY="$R2_PREFIX/CNC-Inlay-Studio-latest.dmg"
+LATEST_PUBLIC_URL="$R2_PUBLIC_URL/$LATEST_KEY"
+
 step "Uploading .dmg to R2: $R2_BUCKET/$DMG_KEY"
 wrangler r2 object put "$R2_BUCKET/$DMG_KEY" \
     --file "$DMG_LOCAL" \
     --content-type "application/x-apple-diskimage" \
     --remote 2>&1 | tail -3
 echo "✓ Uploaded: $DMG_PUBLIC_URL"
+
+step "Uploading 'latest' alias: $R2_BUCKET/$LATEST_KEY"
+wrangler r2 object put "$R2_BUCKET/$LATEST_KEY" \
+    --file "$DMG_LOCAL" \
+    --content-type "application/x-apple-diskimage" \
+    --remote 2>&1 | tail -3
+echo "✓ Uploaded: $LATEST_PUBLIC_URL"
 
 # ── 4. Build + upload manifest.json ───────────────────────────────────────
 RELEASE_DATE="$(date +%Y-%m-%d)"
