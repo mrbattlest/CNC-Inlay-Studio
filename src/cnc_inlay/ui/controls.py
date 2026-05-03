@@ -1517,6 +1517,64 @@ class ControlsPanel(QWidget):
         if w_mm > 0 and h_mm > 0:
             self.designSizeChanged.emit(w_mm, h_mm)
 
+    def set_bit_library(self, bits: list[Bit]) -> None:
+        """Replace the available bit library (called after the user edits
+        Settings → My Bits). Preserves the currently-selected endmill +
+        v-bit by name when possible, then rebuilds roughing checkboxes
+        and speeds tabs to reflect the new set."""
+        self._bits = list(bits)
+        self._all_endmills = [b for b in bits if b.type == "endmill"]
+        # Snapshot current selections so we can restore them.
+        prev_endmill_name = (
+            self.endmill_combo.currentData().name
+            if self.endmill_combo.currentData() else None
+        )
+        prev_vbit_name = (
+            self.vbit_combo.currentData().name
+            if self.vbit_combo.currentData() else None
+        )
+        # Suppress signals so the rebuild doesn't fire param-change
+        # cascades or roughing-refresh until everything is consistent.
+        self._suppress_signals = True
+
+        # Rebuild endmill combo.
+        self.endmill_combo.blockSignals(True)
+        self.endmill_combo.clear()
+        for b in self._all_endmills:
+            self.endmill_combo.addItem(b.name, b)
+        # Restore previous selection if it survived; otherwise pick first.
+        target_idx = -1
+        if prev_endmill_name:
+            for i in range(self.endmill_combo.count()):
+                if self.endmill_combo.itemText(i) == prev_endmill_name:
+                    target_idx = i
+                    break
+        if target_idx < 0 and self.endmill_combo.count() > 0:
+            target_idx = 0
+        if target_idx >= 0:
+            self.endmill_combo.setCurrentIndex(target_idx)
+        self.endmill_combo.blockSignals(False)
+
+        # Rebuild v-bit combo (if any v-bits in library).
+        vbits = [b for b in bits if b.type == "vbit"]
+        self.vbit_combo.blockSignals(True)
+        self.vbit_combo.clear()
+        for b in vbits:
+            self.vbit_combo.addItem(b.name, b)
+        if prev_vbit_name:
+            for i in range(self.vbit_combo.count()):
+                if self.vbit_combo.itemText(i) == prev_vbit_name:
+                    self.vbit_combo.setCurrentIndex(i)
+                    break
+        self.vbit_combo.blockSignals(False)
+
+        self._suppress_signals = False
+        # Rebuild downstream UI bits that depend on the library.
+        self._refresh_bit_specs()
+        self._refresh_roughing_options()
+        self._refresh_speeds_tabs()
+        self._on_param_change()
+
     def set_recommendation(self, text_or_lines) -> None:
         """Accepts either a list of recommendation lines (preferred — preserves
         item structure for the popup) or a single string (legacy callers)."""

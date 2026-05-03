@@ -47,3 +47,13 @@ def load_bits() -> list[Bit]:
 def save_bits(bits: list[Bit]) -> None:
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
     USER_BITS_PATH.write_text(json.dumps([_to_dict(b) for b in bits], indent=2))
+
+
+def load_catalog() -> list[Bit]:
+    """Load the comprehensive shipped bit catalog. Read-only — the user
+    picks from this list in the My Bits dialog and their selections are
+    persisted to ``USER_BITS_PATH``."""
+    raw = json.loads(
+        files("cnc_inlay.presets.data").joinpath("bits.catalog.json").read_text()
+    )
+    return [_from_dict(d) for d in raw]

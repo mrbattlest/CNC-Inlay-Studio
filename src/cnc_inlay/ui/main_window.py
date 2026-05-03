@@ -608,6 +608,12 @@ class MainWindow(QMainWindow):
             zero_menu.addAction(act)
 
         settings_menu.addSeparator()
+        my_bits_act = QAction("My Bits…", self)
+        my_bits_act.setStatusTip(
+            "Pick the endmills, ball-noses, and V-bits you own from the catalog"
+        )
+        my_bits_act.triggered.connect(self._on_open_my_bits)
+        settings_menu.addAction(my_bits_act)
         prefs_act = QAction("Preferences…", self)
         prefs_act.triggered.connect(self._on_open_preferences)
         settings_menu.addAction(prefs_act)
@@ -1351,6 +1357,32 @@ class MainWindow(QMainWindow):
     def _on_open_preferences(self) -> None:
         dlg = PreferencesDialog(self)
         dlg.exec()
+
+    def _on_open_my_bits(self) -> None:
+        """Settings → My Bits — pick owned bits from the catalog. After
+        save, reload bits from disk and refresh the controls panel so the
+        Pocket / Plug / Roughing dropdowns reflect the new owned set
+        across every open project window."""
+        from cnc_inlay.ui.my_bits_dialog import MyBitsDialog
+        dlg = MyBitsDialog(self)
+        dlg.bitsChanged.connect(self._reload_bits_after_my_bits_change)
+        dlg.exec()
+
+    def _reload_bits_after_my_bits_change(self) -> None:
+        from cnc_inlay.presets.bits import load_bits as _reload
+        new_bits = _reload()
+        # Update every open MainWindow's bit library + sidebar so the
+        # change is reflected across the whole app, not just the window
+        # that opened the dialog.
+        for win in MainWindow._open_windows:
+            win._bits = new_bits
+            try:
+                win._controls.set_bit_library(new_bits)
+            except AttributeError:
+                # Older controls panel without dynamic refresh — leave
+                # the dropdown stale; user can restart to pick up the
+                # change. Avoid crashing the dialog flow.
+                pass
 
     def _on_show_about(self) -> None:
         from cnc_inlay.ui.about_dialog import show_about_dialog
