@@ -396,6 +396,12 @@ class MainWindow(QMainWindow):
         self._stream_last_cursor: int = 0
         self._stream_last_total: int = 0
         self._stream_estimated_total_s: float = 0.0
+        # Resume bookkeeping: start_line is the original-program line we
+        # asked the streamer to begin at; preamble_len is how many extra
+        # lines the streamer prepends (5 modal-state-restore lines for
+        # any non-zero start, 0 for a fresh run).
+        self._streaming_start_line: int = 0
+        self._streaming_preamble_len: int = 0
         from PySide6.QtCore import QTimer as _QTimer
         self._stream_clock = _QTimer(self)
         self._stream_clock.setInterval(1000)
@@ -2397,6 +2403,13 @@ class MainWindow(QMainWindow):
         self._streaming_side = side
         # Switch to the active side's tab so the live cone is visible immediately.
         self._main_tabs.setCurrentIndex(0 if side == "pocket" else 1)
+        # Remember the resume offset so progress events can be mapped from
+        # streamer-line space (which prepends a 5-line preamble for any
+        # non-zero start) back to original-program line space — needed for
+        # the scrub bar to advance correctly and for an accurate "elapsed
+        # / total estimated" readout.
+        self._streaming_start_line = start_line
+        self._streaming_preamble_len = 5 if start_line > 0 else 0
 
         # Build a checkpoint for crash recovery — saved every couple of seconds
         # while the cut runs.
@@ -2475,15 +2488,30 @@ class MainWindow(QMainWindow):
         import time
         self._control_panel.set_streaming(True)
         self._stream_start_time = time.monotonic()
-        self._stream_last_cursor = 0
-        self._stream_last_total = total
-        # Static estimate of the side's total cut time as a fallback for the
-        # first few percent before adaptive ETA stabilises.
-        self._stream_estimated_total_s = (
-            self._pocket_seconds if self._streaming_side == "pocket"
-            else self._plug_seconds if self._streaming_side == "plug"
-            else 0.0
-        )
+        # Map streamer total → original-program total (compensate for the
+        # 5-line preamble the streamer prepends on a non-zero start_line).
+        idx = getattr(self, "_scrub_indices", {}).get(self._streaming_side)
+        original_total = idx.total_lines if idx is not None else total
+        self._stream_last_cursor = self._streaming_start_line
+        self._stream_last_total = original_total
+        # Estimated remaining time = total cumulative seconds minus
+        # cumulative-at-start, so a "Run from cursor" at line N reflects
+        # only the work that's left, not the full side. Falls back to the
+        # whole-side estimate if there's no index for this side.
+        if idx is not None and idx.cumulative_seconds:
+            total_s = idx.cumulative_seconds[-1]
+            start_s = (
+                idx.cumulative_seconds[self._streaming_start_line]
+                if self._streaming_start_line < len(idx.cumulative_seconds)
+                else total_s
+            )
+            self._stream_estimated_total_s = max(0.0, total_s - start_s)
+        else:
+            self._stream_estimated_total_s = (
+                self._pocket_seconds if self._streaming_side == "pocket"
+                else self._plug_seconds if self._streaming_side == "plug"
+                else 0.0
+            )
         self._stream_clock.start()
         self._control_panel.set_stream_status(
             f"Streaming — {total:,} lines queued, starting…"
@@ -2492,10 +2520,17 @@ class MainWindow(QMainWindow):
         self._sleep_inhibitor.acquire()
 
     def _on_stream_progress(self, cursor: int, total: int) -> None:
-        # Update the line/percent + bar via the existing API.
-        self._control_panel.set_stream_progress(cursor, total)
-        self._stream_last_cursor = cursor
-        self._stream_last_total = total
+        # Streamer cursor/total are in streamer-line space (preamble +
+        # remainder for resumes). Map back to original-program line space
+        # so the scrub bar advances correctly and the percentage matches
+        # the program the user is looking at.
+        original_line = self._streaming_start_line + max(
+            0, cursor - self._streaming_preamble_len
+        )
+        original_total = self._stream_last_total or total
+        self._control_panel.set_stream_progress(original_line, original_total)
+        self._stream_last_cursor = original_line
+        self._stream_last_total = original_total
         # Refresh the elapsed/ETA text immediately rather than waiting for
         # the next 1 Hz tick — feels snappier on fast-streaming sections.
         self._render_stream_time_status()
