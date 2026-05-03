@@ -890,9 +890,15 @@ class MainWindow(QMainWindow):
 
     def _on_save_project_as(self) -> bool:
         """Returns True on successful save, False on cancel or error."""
-        suggested = "untitled.inlay"
+        # Default to ~/Documents — the SVG's source dir is often a Downloads
+        # or temp folder that isn't where the user wants their projects to
+        # end up. The filename still inherits from the SVG when available.
+        documents = Path.home() / "Documents"
         if self._design and self._design.source_path is not None:
-            suggested = str(self._design.source_path.with_suffix(".inlay"))
+            stem = self._design.source_path.stem
+            suggested = str(documents / f"{stem}.inlay")
+        else:
+            suggested = str(documents / "untitled.inlay")
         path, _ = QFileDialog.getSaveFileName(
             self, "Save project as", suggested, "Inlay project (*.inlay);;All files (*)"
         )

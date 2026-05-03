@@ -98,12 +98,13 @@ class Canvas3D(gl.GLViewWidget):
         self._boundary_chains: list[Chain] = []
         self._view_mode: ViewMode = "pocket"
 
-        self._grid = gl.GLGridItem()
-        self._grid.setSize(x=BED_WIDTH_MM, y=BED_HEIGHT_MM)
-        self._grid.setSpacing(10, 10)
-        self._grid.setColor(pg.mkColor(GRID))
-        self.addItem(self._grid)
-        self._draw_bed()
+        # Grid + bed envelope are CREATED in showEvent, not here. Reason:
+        # pyqtgraph GL items lazily upload buffers to whichever GL context
+        # is current at first paint. If we create them in __init__ before
+        # this widget has its own context, they bind to the FIRST window's
+        # context and silently render nothing in any subsequent window.
+        # See _initialise_bed_items().
+        self._grid = None
 
         # 3D / Top-down toggle — sits at the very top-right corner; zoom
         # toolbar slots in just below it. Replaces the old nested QTabWidget.
@@ -140,6 +141,17 @@ class Canvas3D(gl.GLViewWidget):
         self._bit_legend.raise_()
 
         self._machine_marker_items: list = []
+
+        # pyqtgraph multi-window quirk: GL items lazily allocate VBOs
+        # against whichever GL context is current at first paint. If we
+        # construct GLGridItem / GLLinePlotItem in __init__ before this
+        # widget has its own context, they bind to the FIRST window's
+        # context and render nothing in any subsequent window. Symptom:
+        # only GLTextItem axis labels show (those go through Qt's painter
+        # via renderText, not raw GL). Fix: defer construction to the
+        # first showEvent, when this widget definitely has its own
+        # context.
+        self._bed_initialised = False
 
     # ---------------------------------------------------------------- design
 
@@ -510,7 +522,22 @@ class Canvas3D(gl.GLViewWidget):
         # See canvas.py for why this matters: tab-switch makes the canvas
         # visible after the legend was set up against a stale parent size.
         super().showEvent(event)
+        if not self._bed_initialised:
+            self._bed_initialised = True
+            self._initialise_bed_items()
         self._position_bit_legend()
+
+    def _initialise_bed_items(self) -> None:
+        """Construct grid + bed envelope items. Called from the first
+        showEvent so the items bind to THIS widget's GL context. See
+        __init__ comment on _bed_initialised for the multi-window
+        rationale."""
+        self._grid = gl.GLGridItem()
+        self._grid.setSize(x=BED_WIDTH_MM, y=BED_HEIGHT_MM)
+        self._grid.setSpacing(10, 10)
+        self._grid.setColor(pg.mkColor(GRID))
+        self.addItem(self._grid)
+        self._draw_bed()
 
     def _position_bit_legend(self) -> None:
         # Don't gate on isVisible() — see canvas.py for the same fix.
