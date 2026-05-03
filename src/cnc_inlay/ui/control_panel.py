@@ -601,6 +601,16 @@ class ControlPanel(QWidget):
             self._pos_label.setText(
                 f"WPos  X {wpos.x:7.3f}   Y {wpos.y:7.3f}   Z {wpos.z:7.3f}"
             )
+        # Recovery-jog gate: when a stream is paused (Hold) — whether from
+        # a programmed M0 tool change or a user-initiated feed-hold — let
+        # the operator jog so they can lift the bit, swap a broken one,
+        # re-zero Z, etc. before clicking Resume. When motion resumes
+        # (Run/Jog/Idle), lock jog out again so a stray click can't crash
+        # into the running cut.
+        if self._streaming:
+            should_allow = status.state in (MachineState.HOLD, MachineState.ALARM)
+            if should_allow != self._paused_for_tool_change:
+                self.set_paused_for_tool_change(should_allow)
 
     @Slot(str)
     def _on_error(self, message: str) -> None:
