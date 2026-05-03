@@ -44,6 +44,13 @@ def _emit_section_body(section: Section, params: InlayParams) -> list[str]:
 
     lines.append(comment(f"--- {section.label} : {section.bit.name} ---"))
     lines.append(f"M3 S{section.material.rpm}")
+    # Spindle ramp-up dwell. Without this, the very next move (rapid +
+    # plunge) starts before the spindle reaches commanded RPM. A 1 mm
+    # bit hitting wood at half-speed has snapped users' bits — the bit's
+    # tip can't shed chips fast enough at low RPM, so cutting force
+    # spikes. 3 s is enough for a Lunyee 500 W spindle to reach 10000
+    # RPM cold-start.
+    lines.append("G4 P3")
 
     for chain in section.chains:
         if not chain:

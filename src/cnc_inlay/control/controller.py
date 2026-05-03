@@ -95,6 +95,15 @@ class MachineWorker(QObject):
         self._collecting_settings: dict[int, float] | None = None
         self._collected_other_lines: list[str] = []
         self._settings_timer: QTimer | None = None
+        # Tool-change deferral. When _stream_tick sends an M0, we stash the
+        # upcoming bit name here; we DON'T emit toolChangeRequired until a
+        # status report shows the machine has actually entered Hold (which
+        # means GRBL drained its planner queue, finished the in-flight cuts,
+        # and stopped the spindle). Without this the banner appeared as
+        # soon as the M0 hit the serial buffer — often many seconds before
+        # the spindle actually stopped, prompting the user to reach for a
+        # spinning bit.
+        self._pending_tool_change_bit: str | None = None
 
     # ---------------------------------------------------------------- slots
 
@@ -236,6 +245,7 @@ class MachineWorker(QObject):
             self._checkpoint_timer.stop()
             self._checkpoint_timer = None
         self._streamer = None
+        self._pending_tool_change_bit = None
         # Keep the checkpoint on disk after an abort/error so the user can
         # recover. Only clear on clean completion.
         self.streamAborted.emit(reason)
@@ -281,13 +291,15 @@ class MachineWorker(QObject):
         self._streamer.feed(self._serial.write)
         cursor_after = self._streamer.cursor
         # Detect tool changes: any newly-sent line whose index is in the
-        # streamer's tool_change_at map means the next pause-on-M0 is for
-        # installing that bit. Fire one signal per tool change.
+        # streamer's tool_change_at map means there's an M0 in flight for
+        # that bit. STASH the bit name — the actual UI prompt is deferred
+        # until we see GRBL transition to Hold, so the operator isn't told
+        # to swap a spinning bit while the planner queue drains.
         if self._streamer.tool_change_at:
             for idx in range(cursor_before, cursor_after):
                 bit_name = self._streamer.tool_change_at.get(idx)
                 if bit_name is not None:
-                    self.toolChangeRequired.emit(bit_name)
+                    self._pending_tool_change_bit = bit_name
         self.streamProgress.emit(self._streamer.cursor, self._streamer.total)
         if self._streamer.is_done:
             if self._stream_timer is not None:
@@ -298,6 +310,7 @@ class MachineWorker(QObject):
                 self._checkpoint_timer = None
             self._streamer = None
             self._checkpoint = None
+            self._pending_tool_change_bit = None
             clear_checkpoint()  # clean completion — no need to recover
             self.streamCompleted.emit()
 
@@ -329,6 +342,17 @@ class MachineWorker(QObject):
                     elif self._cached_wco is not None and status.mpos is not None:
                         status = replace(status, wco=self._cached_wco)
                     self.statusReceived.emit(status)
+                    # Once GRBL actually halts (Hold), the M0 has finished
+                    # draining the planner queue and the spindle is stopped.
+                    # Emit the deferred tool-change prompt now — it's safe
+                    # to swap the bit.
+                    if (
+                        self._pending_tool_change_bit is not None
+                        and status.state == MachineState.HOLD
+                    ):
+                        bit = self._pending_tool_change_bit
+                        self._pending_tool_change_bit = None
+                        self.toolChangeRequired.emit(bit)
                 continue
             resp = parse_response(line)
             # Streaming uses character counting — every 'ok' / 'error' frees
