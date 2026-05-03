@@ -41,11 +41,12 @@ from cnc_inlay.core.units import load_settings, save_settings
 
 
 # ---------- Configure once you have the Gumroad product set up --------------
-# Gumroad's "permalink" — the slug at the end of your product URL. For
-# https://yourname.gumroad.com/l/abc12 the permalink is "abc12". The Verify
-# License API uses this to look the key up under your account. Until this is
-# filled in, license verification will always fail (trial-only mode).
-GUMROAD_PRODUCT_PERMALINK: str = "cncinlaystudio"
+# Gumroad's product_id — a base64-shaped opaque string shown next to the
+# "License key" toggle on the product's Content page. The Verify License
+# API requires product_id (not product_permalink) for any product created
+# on or after 2023-01-09. Sending product_permalink to a newer product
+# yields HTTP 500 from Gumroad's API.
+GUMROAD_PRODUCT_ID: str = "E9auoRV85RVVQrQyz3UJcw=="
 GUMROAD_PRODUCT_URL: str = "https://malcolmross.gumroad.com/l/cncinlaystudio"
 # ---------------------------------------------------------------------------
 
@@ -190,14 +191,13 @@ def verify_license_with_gumroad(
     license_key: str, *, timeout: float = 10.0,
 ) -> VerifyResult:
     """Hit Gumroad's public verify endpoint. Returns ``VerifyResult.valid``
-    True only when the key exists, is bound to ``GUMROAD_PRODUCT_PERMALINK``,
+    True only when the key exists, is bound to ``GUMROAD_PRODUCT_ID``,
     and hasn't been refunded / charged-back / disputed.
 
     Network failures and configuration-not-set are reported as ``valid=False``
     with a descriptive ``error`` so the caller can show a useful message.
     """
-    if (not GUMROAD_PRODUCT_PERMALINK
-            or GUMROAD_PRODUCT_PERMALINK == "REPLACE_ME"):
+    if not GUMROAD_PRODUCT_ID or GUMROAD_PRODUCT_ID == "REPLACE_ME":
         return VerifyResult(
             valid=False,
             error="License verification isn't configured yet. Contact the developer.",
@@ -206,7 +206,7 @@ def verify_license_with_gumroad(
         return VerifyResult(valid=False, error="Enter a license key.")
 
     body = urllib.parse.urlencode({
-        "product_permalink": GUMROAD_PRODUCT_PERMALINK,
+        "product_id": GUMROAD_PRODUCT_ID,
         "license_key": license_key.strip(),
         "increment_uses_count": "false",
     }).encode()
