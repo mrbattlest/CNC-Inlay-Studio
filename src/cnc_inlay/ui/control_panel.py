@@ -223,11 +223,24 @@ class ControlPanel(QWidget):
         self._step_group = QButtonGroup(self)
         self._step_group.setExclusive(True)
         self._step_buttons: dict[float, QPushButton] = {}
+        # Amber-highlight the selected step so the active jog distance is
+        # unmistakable. The global theme's default checked state isn't
+        # visually distinct enough — users couldn't tell at a glance
+        # whether a jog button would move 0.1 mm or 10 mm.
+        step_btn_style = (
+            "QPushButton { padding: 4px 8px; }"
+            "QPushButton:checked {"
+            "  background: #f5a623; color: #1d1f24;"
+            "  border: 1px solid #f5a623; font-weight: 700;"
+            "}"
+            "QPushButton:checked:hover { background: #ffb945; color: #1d1f24; }"
+        )
         for value in (0.1, 1.0, 10.0):
             label = f"{value:g}"
             btn = QPushButton(label)
             btn.setCheckable(True)
             btn.setFixedWidth(40)
+            btn.setStyleSheet(step_btn_style)
             btn.setToolTip(f"Each jog button moves the bit {label} mm")
             self._step_group.addButton(btn)
             self._step_buttons[value] = btn

@@ -126,10 +126,36 @@ def advise(
     flutes = max(1, bit.flutes)
     janka = pocket_material.janka_lbf
 
-    # Resolve effective speeds (overrides win over material defaults).
-    rpm = params.spindle_rpm_override or pocket_material.rpm
-    feed = params.feed_override_mm_min or pocket_material.feed_mm_min
-    plunge = params.plunge_override_mm_min or pocket_material.plunge_mm_min
+    # Resolve effective speeds with the SAME precedence the G-code emitter
+    # uses: per-bit override → legacy global override → material default.
+    # Earlier versions only consulted the legacy globals, so an override
+    # entered on the per-bit Speeds tab was invisible to the advisor —
+    # users got "feed 500 mm/min is too aggressive" warnings naming the
+    # material default instead of the value they actually set.
+    bit_override = params.bit_speed_overrides.get(bit.name)
+
+    def _pick(bit_val, legacy_global, default_val):
+        if bit_val is not None:
+            return bit_val
+        if legacy_global is not None:
+            return legacy_global
+        return default_val
+
+    rpm = _pick(
+        bit_override.rpm if bit_override else None,
+        params.spindle_rpm_override,
+        pocket_material.rpm,
+    )
+    feed = _pick(
+        bit_override.feed_mm_min if bit_override else None,
+        params.feed_override_mm_min,
+        pocket_material.feed_mm_min,
+    )
+    plunge = _pick(
+        bit_override.plunge_mm_min if bit_override else None,
+        params.plunge_override_mm_min,
+        pocket_material.plunge_mm_min,
+    )
     pass_depth = params.pass_depth_mm
 
     # Safe ranges.
