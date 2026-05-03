@@ -42,6 +42,7 @@ QSlider = _NoScrollSlider  # type: ignore[misc]
 from cnc_inlay.control.controller import MachineController
 from cnc_inlay.control.grbl import MachineState, Status
 from cnc_inlay.control.serial_io import list_serial_ports
+from cnc_inlay.ui.scrub_bar import BitSegment, ScrubBar
 
 
 _STATE_COLORS = {
@@ -71,6 +72,15 @@ class ControlPanel(QWidget):
     runPlugRequested = Signal()
     dryRunPocketRequested = Signal()
     dryRunPlugRequested = Signal()
+    # Run from a specific G-code line (selected via the scrub bar). The
+    # side ("pocket" or "plug") plus the start_line index. Host opens a
+    # confirmation dialog and calls start_stream(start_line=N) on the
+    # controller.
+    runFromLineRequested = Signal(str, int)
+    # Continuous scrub-handle position. Host uses this to update the 3D
+    # canvas's bit-position marker so the operator can see where they're
+    # about to start cutting.
+    scrubPositionChanged = Signal(str, int)  # side, line
     streamPauseRequested = Signal()
     streamResumeRequested = Signal()
     streamAbortRequested = Signal()
@@ -457,13 +467,55 @@ class ControlPanel(QWidget):
         grid.addWidget(self._run_plug_btn, 1, 1)
         layout.addLayout(grid)
 
-        # Slim progress bar with status text on its own line.
-        self._stream_progress = QProgressBar()
-        self._stream_progress.setRange(0, 1000)
-        self._stream_progress.setValue(0)
-        self._stream_progress.setTextVisible(False)
-        self._stream_progress.setFixedHeight(8)
-        layout.addWidget(self._stream_progress)
+        # Coloured scrub bar replacing the old plain progress bar. Each
+        # bit gets its own coloured band; live progress dims the streamed
+        # portion; a draggable amber handle picks a start-from line.
+        self._scrub_bar = ScrubBar()
+        layout.addWidget(self._scrub_bar)
+        # The scrub bar shows whichever side the operator most recently
+        # interacted with via Run / Dry / scrub. Tracked so signals know
+        # whether to start the pocket or plug program.
+        self._scrub_side: str = "pocket"
+        self._scrub_programs: dict[str, tuple[int, list[BitSegment]]] = {}
+        self._scrub_bar.scrubMoved.connect(
+            lambda line: self.scrubPositionChanged.emit(self._scrub_side, line)
+        )
+
+        # Run-from-cursor controls live just under the scrub bar.
+        scrub_row = QHBoxLayout()
+        scrub_row.setSpacing(4)
+        self._scrub_side_label = QLabel("Showing: —")
+        self._scrub_side_label.setObjectName("hint")
+        scrub_row.addWidget(self._scrub_side_label)
+        scrub_row.addStretch(1)
+        self._show_pocket_btn = QPushButton("Show Pocket")
+        self._show_plug_btn = QPushButton("Show Plug")
+        self._show_pocket_btn.setToolTip("Load the pocket program into the scrub bar")
+        self._show_plug_btn.setToolTip("Load the plug program into the scrub bar")
+        self._show_pocket_btn.clicked.connect(lambda: self._show_scrub_side("pocket"))
+        self._show_plug_btn.clicked.connect(lambda: self._show_scrub_side("plug"))
+        for b in (self._show_pocket_btn, self._show_plug_btn):
+            b.setEnabled(False)
+            b.setMaximumWidth(110)
+        scrub_row.addWidget(self._show_pocket_btn)
+        scrub_row.addWidget(self._show_plug_btn)
+        self._snap_next_bit_btn = QPushButton("⏭ Next bit")
+        self._snap_next_bit_btn.setToolTip(
+            "Snap the scrub handle to the next bit-change point"
+        )
+        self._snap_next_bit_btn.setEnabled(False)
+        self._snap_next_bit_btn.setMaximumWidth(96)
+        self._snap_next_bit_btn.clicked.connect(self._on_snap_to_next_bit)
+        scrub_row.addWidget(self._snap_next_bit_btn)
+        self._run_from_cursor_btn = QPushButton("▶ Run from cursor")
+        self._run_from_cursor_btn.setToolTip(
+            "Start cutting at the scrub-handle line. Make sure the right bit "
+            "is installed and Z is zeroed for that bit."
+        )
+        self._run_from_cursor_btn.setEnabled(False)
+        self._run_from_cursor_btn.clicked.connect(self._on_run_from_cursor)
+        scrub_row.addWidget(self._run_from_cursor_btn)
+        layout.addLayout(scrub_row)
 
         # Status label + Setup Guide on one row to save vertical space.
         bottom = QHBoxLayout()
@@ -479,6 +531,54 @@ class ControlPanel(QWidget):
         layout.addLayout(bottom)
 
         return box
+
+    # ----------------------------------------------------------- scrub bar
+
+    def set_scrub_program(
+        self, side: str, total_lines: int, segments: list[BitSegment]
+    ) -> None:
+        """Host calls this after Preview to register a side's program with
+        the scrub bar. Both sides can be registered; ``_show_scrub_side``
+        picks which one is currently visible."""
+        self._scrub_programs[side] = (total_lines, segments)
+        self._show_pocket_btn.setEnabled("pocket" in self._scrub_programs)
+        self._show_plug_btn.setEnabled("plug" in self._scrub_programs)
+        # Default to pocket on first load.
+        if not self._scrub_bar.total_lines or self._scrub_side == side:
+            self._show_scrub_side(side)
+
+    def clear_scrub_programs(self) -> None:
+        self._scrub_programs.clear()
+        self._scrub_bar.clear()
+        self._scrub_side_label.setText("Showing: —")
+        self._show_pocket_btn.setEnabled(False)
+        self._show_plug_btn.setEnabled(False)
+        self._snap_next_bit_btn.setEnabled(False)
+        self._run_from_cursor_btn.setEnabled(False)
+
+    def _show_scrub_side(self, side: str) -> None:
+        if side not in self._scrub_programs:
+            return
+        self._scrub_side = side
+        total, segs = self._scrub_programs[side]
+        self._scrub_bar.set_program(total, segs)
+        self._scrub_side_label.setText(
+            f"Showing: <b>{side.title()}</b> — {total:,} lines, "
+            f"{len(segs)} bit{'s' if len(segs) != 1 else ''}"
+        )
+        self._scrub_side_label.setTextFormat(Qt.RichText)
+        self._snap_next_bit_btn.setEnabled(True)
+        self._run_from_cursor_btn.setEnabled(
+            not self._streaming and self._controller.is_connected
+        )
+
+    def _on_snap_to_next_bit(self) -> None:
+        nxt = self._scrub_bar.next_bit_boundary(self._scrub_bar.scrub_line)
+        if nxt is not None:
+            self._scrub_bar.set_scrub_line(nxt)
+
+    def _on_run_from_cursor(self) -> None:
+        self.runFromLineRequested.emit(self._scrub_side, self._scrub_bar.scrub_line)
 
     # ------------------------------------------------------------ console
 
@@ -691,6 +791,13 @@ class ControlPanel(QWidget):
         for btn in (self._run_pocket_btn, self._run_plug_btn,
                     self._dry_pocket_btn, self._dry_plug_btn):
             btn.setEnabled(has_result and connected)
+        # Run-from-cursor is also gated on having a program loaded into
+        # the scrub bar, not just having a result.
+        self._run_from_cursor_btn.setEnabled(
+            has_result and connected
+            and self._scrub_bar.total_lines > 0
+            and not self._streaming
+        )
 
     def set_streaming(self, streaming: bool) -> None:
         # While streaming, lock out jog/zero/run/disconnect — the only safe
@@ -712,6 +819,11 @@ class ControlPanel(QWidget):
         for btn in (self._stream_pause_btn, self._stream_resume_btn, self._stream_abort_btn):
             btn.setEnabled(self._controller.is_connected)
         self._connect_btn.setEnabled(not streaming)
+        # Run-from-cursor obeys the same gate as the regular Run buttons.
+        self._run_from_cursor_btn.setEnabled(
+            not streaming and self._controller.is_connected
+            and self._scrub_bar.total_lines > 0
+        )
 
     def set_paused_for_tool_change(self, paused: bool) -> None:
         """Mid-stream M0 tool-change mode. Re-enable jog so the operator can
@@ -730,10 +842,13 @@ class ControlPanel(QWidget):
 
     def set_stream_progress(self, line: int, total: int) -> None:
         if total <= 0:
-            self._stream_progress.setValue(0)
+            self._scrub_bar.set_progress(0)
             self._stream_status_label.setText("Idle")
             return
-        self._stream_progress.setValue(int(line / total * 1000))
+        # Forward to the scrub bar so the dim live-progress overlay grows
+        # as the stream advances. Scrub bar pulls its handle along with
+        # progress so the operator can't pick a line behind the cursor.
+        self._scrub_bar.set_progress(line)
         self._stream_status_label.setText(f"Line {line:,} / {total:,}  ({line/total*100:.0f}%)")
 
     def set_stream_status(self, text: str) -> None:

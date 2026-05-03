@@ -698,6 +698,10 @@ class MainWindow(QMainWindow):
             self._tool_change_dialog.hide
         )
         self._control_panel.streamAbortRequested.connect(self._controller.stream_abort)
+        # Scrub-bar wiring: live position preview while dragging, and
+        # "▶ Run from cursor" → confirm + start_stream(start_line=N).
+        self._control_panel.scrubPositionChanged.connect(self._on_scrub_preview)
+        self._control_panel.runFromLineRequested.connect(self._on_run_from_line)
         self._controller.connectionChanged.connect(self._on_machine_connection_changed)
         self._controller.streamStarted.connect(self._on_stream_started)
         # Progress updates go through main_window so it can compute and
@@ -1718,6 +1722,10 @@ class MainWindow(QMainWindow):
         )
         # Enable Run-on-machine buttons if the machine is also connected.
         self._control_panel.set_run_available(True)
+        # Build the scrub-bar segment + position index for both sides so
+        # the operator can drag to a line, see the bit at that XYZ in the
+        # 3D preview, and start cutting from there.
+        self._refresh_scrub_programs(result, endmill)
         # Push fresh values into the Setup Guide if it's visible.
         self._on_params_changed_refresh_guide()
 
@@ -1842,10 +1850,104 @@ class MainWindow(QMainWindow):
             c.clear_toolpaths()
         for c in self._all_3d_canvases():
             c.clear_toolpaths()
+            c.clear_machine_position()
         self._controls.set_summary("")
         self._stop_simulation()
         self._control_panel.set_simulation_available(False)
+        self._control_panel.clear_scrub_programs()
+        self._scrub_indices = {}
         self._set_status("Parameters changed — click Preview to recompute.")
+
+    def _refresh_scrub_programs(self, result, finishing_endmill) -> None:
+        """Index both sides' G-code into bit segments + per-line XYZ, then
+        push to the scrub bar. Called after Preview completes."""
+        from cnc_inlay.gcode.program_index import index_program
+        from cnc_inlay.ui.scrub_bar import BitSegment
+        from cnc_inlay.ui.theme import color_for_bit_index
+
+        self._scrub_indices = {}
+
+        for side, side_result in (("pocket", result.pocket), ("plug", result.plug)):
+            gcode = side_result.gcode
+            if not gcode:
+                continue
+            # First bit name = first entry in bit_chains, or fall back to
+            # the finishing endmill (single-bit programs have no roughing).
+            first_bit_name = (
+                side_result.bit_chains[0][0].name
+                if side_result.bit_chains else finishing_endmill.name
+            )
+            idx = index_program(gcode, first_bit_name=first_bit_name)
+            self._scrub_indices[side] = idx
+            segments = [
+                BitSegment(
+                    start_line=s,
+                    end_line=e,
+                    bit_name=name,
+                    color=color_for_bit_index(i),
+                )
+                for i, (s, e, name) in enumerate(idx.segments)
+            ]
+            self._control_panel.set_scrub_program(side, idx.total_lines, segments)
+
+    def _on_scrub_preview(self, side: str, line: int) -> None:
+        """Scrub handle moved — update the matching 3D canvas's bit-position
+        marker so the operator can see where the cut would resume."""
+        idx = getattr(self, "_scrub_indices", {}).get(side)
+        if idx is None or not idx.positions:
+            return
+        # Clamp the line index — the scrub bar may be one past the last
+        # line if the run is finished.
+        i = max(0, min(line, len(idx.positions) - 1))
+        x, y, z = idx.positions[i]
+        canvas = (
+            self._pocket_canvas3d if side == "pocket" else self._plug_canvas3d
+        )
+        # Use the same bit-tip cone marker the live machine position uses
+        # so the visual is consistent between scrub-preview and real cut.
+        endmill = self._controls.current_endmill()
+        bit_d = endmill.diameter_mm if endmill is not None else 3.0
+        canvas.set_machine_position(x, y, z, bit_d)
+
+    def _on_run_from_line(self, side: str, line: int) -> None:
+        """User clicked '▶ Run from cursor'. Confirm + start_stream(start_line=N)."""
+        if self._result is None or not self._controller.is_connected:
+            return
+        idx = getattr(self, "_scrub_indices", {}).get(side)
+        if idx is None:
+            return
+        # Find the bit in effect at this line for the confirmation prompt.
+        bit_name = "(unknown)"
+        for s, e, name in idx.segments:
+            if s <= line < e:
+                bit_name = name
+                break
+        from PySide6.QtWidgets import QMessageBox
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Run from cursor")
+        msg.setTextFormat(Qt.RichText)
+        msg.setText(
+            f"<b>Start the {side} cut at line {line:,}?</b>"
+        )
+        msg.setInformativeText(
+            f"<p>Bit at this line: <b>{bit_name}</b>.</p>"
+            "<p>Before clicking <b>Start</b>:</p>"
+            "<ul>"
+            f"<li>Make sure the <b>{bit_name}</b> is installed in the spindle.</li>"
+            "<li>Manually jog the bit to a safe Z (well above the wood).</li>"
+            "<li>Re-zero Z if you've changed bits since the last cut.</li>"
+            "</ul>"
+            "<p>The bit will start its first move from wherever it is right "
+            "now — there is no auto-return to the original cut path.</p>"
+        )
+        start = msg.addButton("▶ Start", QMessageBox.AcceptRole)
+        msg.addButton(QMessageBox.Cancel)
+        msg.exec()
+        if msg.clickedButton() is not start:
+            return
+        # Reuse the existing run-on-machine path with an explicit start_line.
+        self._run_on_machine(side, dry_run=False, start_line=line)
 
     # -------------------------------------------------------------- simulator
 
@@ -2157,7 +2259,7 @@ class MainWindow(QMainWindow):
             return False
         return True
 
-    def _run_on_machine(self, side: str, *, dry_run: bool) -> None:
+    def _run_on_machine(self, side: str, *, dry_run: bool, start_line: int = 0) -> None:
         # License gate: Run on Machine is one of the paid features. Dry-run
         # (simulator) is left FREE so trial users can preview machine motion.
         if not dry_run and not self._require_license_or_show_buy("Run on Machine"):
@@ -2316,8 +2418,14 @@ class MainWindow(QMainWindow):
             plug_thickness_mm=params.plug_thickness_mm,
             pocket_depth_mm=params.pocket_depth_mm,
         )
-        self._controller.run_program(gcode, start_line=0, checkpoint=checkpoint)
-        self._set_status(f"Streaming {side} to machine…")
+        # checkpoint cursor mirrors start_line so a recovered run from a
+        # mid-program start position picks up at the right place.
+        checkpoint.cursor = start_line
+        self._controller.run_program(gcode, start_line=start_line, checkpoint=checkpoint)
+        if start_line > 0:
+            self._set_status(f"Streaming {side} to machine from line {start_line:,}…")
+        else:
+            self._set_status(f"Streaming {side} to machine…")
 
     def _resume_run(self, side: str) -> None:
         """Run a stream resumed from the saved checkpoint cursor."""
