@@ -2414,17 +2414,20 @@ class MainWindow(QMainWindow):
         cursor = self._stream_last_cursor
         total = self._stream_last_total
         fraction = (cursor / total) if total > 0 else 0.0
-        # Adaptive ETA once we've seen ≥ 5% real progress; otherwise use the
-        # static estimate from the simulator. Both are clamped at zero so
-        # we don't display a negative remaining time at the very end.
-        if fraction > 0.05:
-            eta = max(0.0, elapsed * (1 - fraction) / fraction)
+        # Show elapsed against the static total-time estimate from the
+        # simulator. Earlier versions extrapolated a "remaining" time from
+        # lines-processed, but G-code lines vary by orders of magnitude in
+        # cut time (G0 rapids vs long G1 sweeps), so the remaining number
+        # would actually GROW as the cut got into the slow real-cutting
+        # phase — the opposite of what users expect from a countdown.
+        total_est = self._stream_estimated_total_s
+        if total_est > 0:
+            time_text = f"⏱ {_format_clock(elapsed)} / {_format_clock(total_est)} estimated"
         else:
-            eta = max(0.0, self._stream_estimated_total_s - elapsed)
+            time_text = f"⏱ {_format_clock(elapsed)} elapsed"
         text = (
             f"Line {cursor:,} / {total:,} ({fraction * 100:.0f}%)  •  "
-            f"⏱ {_format_clock(elapsed)} elapsed, "
-            f"~{_format_clock(eta)} remaining"
+            f"{time_text}"
         )
         self._control_panel.set_stream_status(text)
 
