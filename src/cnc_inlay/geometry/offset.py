@@ -10,9 +10,15 @@ from __future__ import annotations
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 
-# A tight join style for inlay work — sharp corners stay sharp at small offsets,
-# but rounded for outward offsets to avoid spikes.
-_RESOLUTION = 16  # subdivision count for round joins / quadrant
+# Round joins both inward and outward, with enough subdivisions per
+# quadrant to faithfully follow tight concave details. Earlier code used
+# mitre joins on negative (inward) offsets — they're cheaper but they
+# truncate sharp concave notches with a straight shortcut. On a design
+# with hanging-ear features (e.g. dachshund silhouettes), the bit then
+# carves across the notch and removes wood that should stay (the
+# underside of the ear). Round joins produce enough vertices around
+# concave corners that no shortcut happens.
+_RESOLUTION = 32  # subdivision count for round joins / quadrant
 
 
 def _ensure_polygonal(g: BaseGeometry) -> Polygon | MultiPolygon | None:
@@ -36,22 +42,39 @@ def offset_polygon(
 
     Positive grows the polygon outward; negative shrinks inward.
     Returns None if the result is empty.
+
+    Always uses round joins with high resolution (see _RESOLUTION).
+    Mitre joins on negative offsets shortcut concave notches with a flat
+    edge — the bit then cuts across the notch and removes design detail
+    (e.g. the underside of a hanging ear). Round joins follow the
+    concave contour faithfully.
     """
     if geom.is_empty:
         return None
     if delta_mm == 0:
         return geom
-    join_style = "round" if delta_mm > 0 else "mitre"
     try:
         result = geom.buffer(
             delta_mm,
             resolution=_RESOLUTION,
-            join_style=join_style,
-            mitre_limit=2.0,
+            join_style="round",
         )
     except Exception:
         return None
-    return _ensure_polygonal(result)
+    polygonal = _ensure_polygonal(result)
+    # Defensive containment check on inward offsets. The buffer should
+    # mathematically be a subset of the original (Minkowski erosion), but
+    # tiny FP slop can produce a result that overshoots the original by
+    # microns at tight concaves. Re-intersect with the original to clip
+    # any such overshoot — guarantees the bit's centerline path stays
+    # inside the design.
+    if delta_mm < 0 and polygonal is not None:
+        try:
+            clipped = polygonal.intersection(geom)
+            polygonal = _ensure_polygonal(clipped)
+        except Exception:
+            pass
+    return polygonal
 
 
 def pocket_offset_rings(
