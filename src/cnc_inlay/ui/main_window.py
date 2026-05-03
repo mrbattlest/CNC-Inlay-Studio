@@ -654,6 +654,7 @@ class MainWindow(QMainWindow):
         self._controls.parametersChanged.connect(self._param_debounce.start)
         self._controls.designSizeChanged.connect(self._on_design_size_changed)
         self._controls.designSizeChanged.connect(lambda *_: self._mark_dirty())
+        self._controls.rotateRequested.connect(self._on_rotate_design)
         # Updater results: signals are emitted from the daemon worker thread
         # in updater.py; Qt's auto-connection (sender in worker thread,
         # receiver self in main thread) queues delivery to the main-thread
@@ -1587,6 +1588,36 @@ class MainWindow(QMainWindow):
         self._controls.set_summary("")
         self._on_params_changed_refresh_guide()
 
+    def _on_rotate_design(self) -> None:
+        """User clicked Rotate 90°. Spin the design + scaling baseline,
+        push the rotated geometry into every canvas, and update the
+        sidebar size spinboxes to reflect the swapped width/height."""
+        if self._design is None:
+            return
+        self._design.rotate_90_clockwise()
+        self._result = None
+        params = self._controls.current_params()
+        stock_depth = params.pocket_depth_mm + params.glue_gap_mm
+        for c in self._all_2d_canvases():
+            c.set_design(self._design.polygon)
+        for c in self._all_3d_canvases():
+            c.set_design(self._design.polygon, stock_depth_mm=stock_depth)
+        self._update_size_overlays(self._design, params)
+        self._refresh_finished_canvas()
+        # Sidebar reflects the new width/height (they swapped) without
+        # firing designSizeChanged — set_design_summary already coalesces
+        # via _suppress_size_signals.
+        display_name = self._design.basename if self._design.source_path else "design"
+        self._controls.set_design_summary(
+            display_name, self._design.width_mm, self._design.height_mm
+        )
+        self._controls.set_summary("")
+        self._on_params_changed_refresh_guide()
+        self._is_dirty = True
+        self._set_status(
+            f"Rotated 90° → {self._design.width_mm:.1f} × {self._design.height_mm:.1f} mm"
+        )
+
     # ------------------------------------------------------------ preview
 
     def _on_preview(self) -> None:
@@ -1783,7 +1814,7 @@ class MainWindow(QMainWindow):
         else:
             for issue in adv.issues:
                 rec_lines.append(issue)
-        self._controls.set_recommendation(" ".join(rec_lines) or "")
+        self._controls.set_recommendation(rec_lines)
 
         pocket_dur = _format_duration(
             result.pocket.cut_length_mm, result.pocket.air_length_mm, pocket_mat.feed_mm_min

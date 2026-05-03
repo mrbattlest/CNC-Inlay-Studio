@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -478,12 +479,16 @@ class _BitSpeedTab(QWidget):
             rl.setContentsMargins(0, 0, 0, 0)
             rl.setSpacing(4)
             rl.addWidget(spin, 0)
-            # ↺ glyph rendered too small to read on the default Mac font;
-            # switching to ↻ + explicit font-size + a wider button so the
-            # icon is unambiguous as "reset to recommended default."
+            # The global theme applies "padding: 7px 12px" to every
+            # QPushButton — in a fixed-width 26px button that leaves only
+            # ~2px of content area, which is why the glyph rendered as a
+            # blank button. Override padding to 0 so the rotate icon
+            # actually has room to render.
             reset = QPushButton("↻")
-            reset.setFixedWidth(26)
-            reset.setStyleSheet("font-size: 14px;")
+            reset.setFixedSize(28, 28)
+            reset.setStyleSheet(
+                "QPushButton { padding: 0; font-size: 16px; font-weight: 700; }"
+            )
             reset.setToolTip("Reset to recommended default for this material")
             reset.clicked.connect(reset_fn)
             rl.addWidget(reset)
@@ -663,6 +668,7 @@ class ControlsPanel(QWidget):
     parametersChanged = Signal()
     previewRequested = Signal()
     designSizeChanged = Signal(float, float)  # width_mm, height_mm
+    rotateRequested = Signal()                # rotate the loaded design 90° CW
 
     def __init__(
         self,
@@ -758,33 +764,45 @@ class ControlsPanel(QWidget):
             "Click to unlock and stretch the design freely."
         )
         self.aspect_lock_button.toggled.connect(self._on_aspect_lock_toggled)
-        # Fit-to-bed button.
-        self.fit_to_bed_button = QPushButton("Fit to bed")
-        self.fit_to_bed_button.setToolTip("Scale to the largest size that fits the 270 × 150 mm bed.")
-        self.fit_to_bed_button.setEnabled(False)
-        self.fit_to_bed_button.setMaximumWidth(110)
-        self.fit_to_bed_button.clicked.connect(self._on_fit_to_bed)
+        # Rotate-90 button.
+        self.rotate_button = QPushButton("⟳ Rotate 90°")
+        self.rotate_button.setToolTip(
+            "Rotate the design 90° clockwise. Width and height swap. "
+            "Useful when the SVG came in landscape but you want portrait, "
+            "or vice versa."
+        )
+        self.rotate_button.setEnabled(False)
+        self.rotate_button.setMaximumWidth(140)
+        self.rotate_button.clicked.connect(self.rotateRequested.emit)
 
-        size_row = QWidget()
-        sh = QHBoxLayout(size_row)
-        sh.setContentsMargins(0, 0, 0, 0)
-        sh.setSpacing(4)
-        sh.addWidget(self.width_spin, 0)
-        sh.addWidget(QLabel("×"))
-        sh.addWidget(self.height_spin, 0)
-        sh.addWidget(self.aspect_lock_button)
+        # Width row — labelled spinbox + aspect-lock + size help button.
+        width_row = QWidget()
+        wr = QHBoxLayout(width_row)
+        wr.setContentsMargins(0, 0, 0, 0)
+        wr.setSpacing(4)
+        wr.addWidget(self.width_spin, 0)
+        wr.addWidget(self.aspect_lock_button)
         title, body = HELP_TEXTS["size"]
-        sh.addWidget(_help_button(title, body, self))
-        sh.addStretch(1)
-        df.addRow("Size:", size_row)
-        # Fit-to-bed button on its own row, narrow.
-        fit_row = QWidget()
-        fh = QHBoxLayout(fit_row)
-        fh.setContentsMargins(0, 0, 0, 0)
-        fh.setSpacing(4)
-        fh.addWidget(self.fit_to_bed_button, 0)
-        fh.addStretch(1)
-        df.addRow("", fit_row)
+        wr.addWidget(_help_button(title, body, self))
+        wr.addStretch(1)
+        df.addRow("Width:", width_row)
+        # Height row — labelled spinbox on its own line so each input has a
+        # clear, unambiguous label rather than relying on a "×" separator.
+        height_row = QWidget()
+        hr = QHBoxLayout(height_row)
+        hr.setContentsMargins(0, 0, 0, 0)
+        hr.setSpacing(4)
+        hr.addWidget(self.height_spin, 0)
+        hr.addStretch(1)
+        df.addRow("Height:", height_row)
+        # Rotate row on its own line.
+        rotate_row = QWidget()
+        rr = QHBoxLayout(rotate_row)
+        rr.setContentsMargins(0, 0, 0, 0)
+        rr.setSpacing(4)
+        rr.addWidget(self.rotate_button, 0)
+        rr.addStretch(1)
+        df.addRow("", rotate_row)
 
         self.origin_combo = QComboBox()
         self.origin_combo.addItem("Center", Origin.CENTER)
@@ -877,6 +895,12 @@ class ControlsPanel(QWidget):
         mf.addRow("Thickness:", _wrap_with_help(self.pocket_thickness_spin, "pocket_thickness", self))
         mf.addRow("Stock W:", _stock_dim_row(self.pocket_stock_w_spin))
         mf.addRow("Stock H:", _stock_dim_row(self.pocket_stock_h_spin))
+        # Visual delimiter so the pocket-side and plug-side groups read
+        # as two separate sub-sections rather than one long stack.
+        mat_sep = QFrame()
+        mat_sep.setFrameShape(QFrame.HLine)
+        mat_sep.setStyleSheet("color:#3a3f47;")
+        mf.addRow(mat_sep)
         mf.addRow("Plug:", _combo_row(self.plug_material_combo, "plug_material"))
         mf.addRow("Thickness:", _wrap_with_help(self.plug_thickness_spin, "plug_thickness", self))
         mf.addRow("Stock W:", _stock_dim_row(self.plug_stock_w_spin))
@@ -931,8 +955,20 @@ class ControlsPanel(QWidget):
         bf.addRow(self.plug_roughing_box)
         self._refresh_roughing_options()
 
-        self.recommendation_label = _hint("Load a design and click Preview to see a recommendation.")
-        bf.addRow(self.recommendation_label)
+        # Recommendation button — opens a popup with any warnings or tips.
+        # The previous inline label crammed long text into a narrow sidebar
+        # that couldn't be read; a button + dedicated dialog gives the text
+        # room to breathe and uses a larger font.
+        self._recommendation_lines: list[str] = []
+        self.recommendation_button = QPushButton(
+            "Load a design + Preview to see recommendations"
+        )
+        self.recommendation_button.setEnabled(False)
+        self.recommendation_button.setStyleSheet(
+            "QPushButton { text-align: left; padding: 6px 10px; }"
+        )
+        self.recommendation_button.clicked.connect(self._show_recommendation_dialog)
+        bf.addRow(self.recommendation_button)
         layout.addWidget(bits_box)
         self._refresh_bit_specs()
 
@@ -1439,7 +1475,7 @@ class ControlsPanel(QWidget):
         self._suppress_size_signals = True
         self.width_spin.setEnabled(True)
         self.height_spin.setEnabled(True)
-        self.fit_to_bed_button.setEnabled(True)
+        self.rotate_button.setEnabled(True)
         self.width_spin.setValue(length_to_display(width_mm, self._units))
         self.height_spin.setValue(length_to_display(height_mm, self._units))
         self._suppress_size_signals = False
@@ -1481,30 +1517,66 @@ class ControlsPanel(QWidget):
         if w_mm > 0 and h_mm > 0:
             self.designSizeChanged.emit(w_mm, h_mm)
 
-    def _on_fit_to_bed(self) -> None:
-        from cnc_inlay.ui.canvas import BED_HEIGHT_MM, BED_WIDTH_MM
-        if not self._design_aspect or self._design_aspect <= 0:
-            return
-        # Scale the original aspect ratio (not the current possibly-stretched
-        # state) to fit. If the user has unlocked + stretched, that's their
-        # choice but Fit goes back to true aspect.
-        bed_aspect = BED_WIDTH_MM / BED_HEIGHT_MM
-        if self._design_aspect >= bed_aspect:
-            new_w = BED_WIDTH_MM
-            new_h = BED_WIDTH_MM / self._design_aspect
+    def set_recommendation(self, text_or_lines) -> None:
+        """Accepts either a list of recommendation lines (preferred — preserves
+        item structure for the popup) or a single string (legacy callers)."""
+        if isinstance(text_or_lines, str):
+            text = text_or_lines.strip()
+            self._recommendation_lines = [text] if text else []
         else:
-            new_h = BED_HEIGHT_MM
-            new_w = BED_HEIGHT_MM * self._design_aspect
-        # Re-lock aspect (Fit to bed never wants distortion).
-        self.aspect_lock_button.setChecked(True)
-        self._suppress_size_signals = True
-        self.width_spin.setValue(length_to_display(new_w, self._units))
-        self.height_spin.setValue(length_to_display(new_h, self._units))
-        self._suppress_size_signals = False
-        self._emit_size_changed()
+            self._recommendation_lines = [
+                ln.strip() for ln in text_or_lines if ln and ln.strip()
+            ]
+        # Update button label to summarise.
+        warnings = sum(1 for ln in self._recommendation_lines if "⚠" in ln)
+        if not self._recommendation_lines:
+            self.recommendation_button.setText(
+                "Load a design + Preview to see recommendations"
+            )
+            self.recommendation_button.setEnabled(False)
+            self.recommendation_button.setStyleSheet(
+                "QPushButton { text-align: left; padding: 6px 10px; }"
+            )
+        elif warnings:
+            self.recommendation_button.setText(
+                f"⚠ {warnings} warning{'s' if warnings != 1 else ''} "
+                f"and recommendations — click for details"
+            )
+            self.recommendation_button.setEnabled(True)
+            # Amber-tinted button so warnings pull the eye.
+            self.recommendation_button.setStyleSheet(
+                "QPushButton { text-align: left; padding: 6px 10px;"
+                "  border-color: #f5a623; color: #f5a623; font-weight: 600; }"
+                "QPushButton:hover { background: rgba(245, 166, 35, 30); }"
+            )
+        else:
+            self.recommendation_button.setText(
+                "ℹ Recommendations available — click for details"
+            )
+            self.recommendation_button.setEnabled(True)
+            self.recommendation_button.setStyleSheet(
+                "QPushButton { text-align: left; padding: 6px 10px; }"
+            )
 
-    def set_recommendation(self, text: str) -> None:
-        self.recommendation_label.setText(text)
+    def _show_recommendation_dialog(self) -> None:
+        if not self._recommendation_lines:
+            return
+        warnings = [ln for ln in self._recommendation_lines if "⚠" in ln]
+        body_html = "".join(
+            f"<p style='margin:0 0 10px 0;'>{ln}</p>"
+            for ln in self._recommendation_lines
+        )
+        title = "Bit & speeds recommendations"
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setIcon(QMessageBox.Warning if warnings else QMessageBox.Information)
+        box.setTextFormat(Qt.RichText)
+        box.setText(
+            f"<h3 style='margin:0 0 10px 0;'>{title}</h3>"
+            f"<div style='font-size:13px; line-height:1.45;'>{body_html}</div>"
+        )
+        box.setStandardButtons(QMessageBox.Close)
+        box.exec()
 
     def set_summary(self, text: str) -> None:
         self.summary_label.setText(text)

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from shapely.affinity import scale as shapely_scale
+from shapely.affinity import rotate as shapely_rotate, scale as shapely_scale
 from shapely.geometry import MultiPolygon, Polygon
 
 from cnc_inlay.core.units import Units
@@ -142,6 +142,23 @@ class Design:
     @property
     def basename(self) -> str:
         return self.source_path.stem if self.source_path else "design"
+
+    def rotate_90_clockwise(self) -> None:
+        """Rotate the design (and its scaling baseline) 90° clockwise around
+        the bounding-box centre. Width and height swap. Subsequent rescales
+        keep working because the original_polygon is rotated in step.
+        """
+        if self.original_polygon is None:
+            return
+        # angle is degrees CCW in shapely, so -90 = 90° CW.
+        rotated_current = shapely_rotate(self.polygon, -90.0, origin="center")
+        rotated_original = shapely_rotate(self.original_polygon, -90.0, origin="center")
+        self.polygon = rotated_current
+        self.original_polygon = rotated_original
+        self.width_mm, self.height_mm = self.height_mm, self.width_mm
+        self.original_width_mm, self.original_height_mm = (
+            self.original_height_mm, self.original_width_mm,
+        )
 
     def rescale(self, target_width_mm: float, target_height_mm: float) -> None:
         """Replace ``polygon`` / dimensions with the original scaled to fit
