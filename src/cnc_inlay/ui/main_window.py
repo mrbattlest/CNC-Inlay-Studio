@@ -635,11 +635,23 @@ class MainWindow(QMainWindow):
         self._controls.fileRequested.connect(self._on_load_requested)
         self._controls.generateRequested.connect(self._on_generate_requested)
         self._controls.previewRequested.connect(self._on_preview)
+        # Cheap, immediate handlers — visual cue (clear stale toolpaths),
+        # dirty bookkeeping, optional setup-guide refresh.
         self._controls.parametersChanged.connect(self._invalidate_result)
         self._controls.parametersChanged.connect(self._on_params_changed_refresh_guide)
-        self._controls.parametersChanged.connect(self._refresh_finished_canvas)
-        self._controls.parametersChanged.connect(self._refresh_stock_outlines)
         self._controls.parametersChanged.connect(self._mark_dirty)
+        # Expensive handlers (re-render the Finished canvas + stock outlines on
+        # all 4 canvases) are debounced. Without this, dragging a spinbox
+        # rebuilds GL items on every tick — visibly fine but wasteful, and on
+        # macOS the GL allocator stutters under rapid churn. 80 ms coalesces a
+        # spinbox flurry into a single rebuild without feeling laggy.
+        from PySide6.QtCore import QTimer as _QTimer
+        self._param_debounce = _QTimer(self)
+        self._param_debounce.setSingleShot(True)
+        self._param_debounce.setInterval(80)
+        self._param_debounce.timeout.connect(self._refresh_finished_canvas)
+        self._param_debounce.timeout.connect(self._refresh_stock_outlines)
+        self._controls.parametersChanged.connect(self._param_debounce.start)
         self._controls.designSizeChanged.connect(self._on_design_size_changed)
         self._controls.designSizeChanged.connect(lambda *_: self._mark_dirty())
         # Updater results: signals are emitted from the daemon worker thread

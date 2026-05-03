@@ -870,11 +870,11 @@ class ControlsPanel(QWidget):
         # Wood selection, thickness, and per-axis stock dimensions each on
         # their own row so the sidebar stays narrow.
         mf.addRow("Pocket:", _combo_row(self.pocket_material_combo, "pocket_material"))
-        mf.addRow("Thickness:", self.pocket_thickness_spin)
+        mf.addRow("Thickness:", _wrap_with_help(self.pocket_thickness_spin, "pocket_thickness", self))
         mf.addRow("Stock W:", _stock_dim_row(self.pocket_stock_w_spin))
         mf.addRow("Stock H:", _stock_dim_row(self.pocket_stock_h_spin))
         mf.addRow("Plug:", _combo_row(self.plug_material_combo, "plug_material"))
-        mf.addRow("Thickness:", self.plug_thickness_spin)
+        mf.addRow("Thickness:", _wrap_with_help(self.plug_thickness_spin, "plug_thickness", self))
         mf.addRow("Stock W:", _stock_dim_row(self.plug_stock_w_spin))
         mf.addRow("Stock H:", _stock_dim_row(self.plug_stock_h_spin))
         layout.addWidget(mat_box)
