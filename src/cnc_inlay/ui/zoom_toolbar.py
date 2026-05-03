@@ -52,6 +52,10 @@ class ZoomToolbar(QWidget):
             btn.setStyleSheet(style)
             btn.setCursor(Qt.PointingHandCursor)
             layout.addWidget(btn)
+        # The ⌂ glyph at font-size 16 has a tall body that clips at the
+        # bottom of a 32px button. A slightly smaller font centres it
+        # cleanly without making the icon look out of scale.
+        self._fit_btn.setStyleSheet(style.replace("font-size: 16px;", "font-size: 13px;"))
 
         self._in_btn.clicked.connect(self.zoomIn.emit)
         self._out_btn.clicked.connect(self.zoomOut.emit)

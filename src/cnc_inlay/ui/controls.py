@@ -478,9 +478,13 @@ class _BitSpeedTab(QWidget):
             rl.setContentsMargins(0, 0, 0, 0)
             rl.setSpacing(4)
             rl.addWidget(spin, 0)
-            reset = QPushButton("↺")
-            reset.setFixedWidth(22)
-            reset.setToolTip("Reset to material default")
+            # ↺ glyph rendered too small to read on the default Mac font;
+            # switching to ↻ + explicit font-size + a wider button so the
+            # icon is unambiguous as "reset to recommended default."
+            reset = QPushButton("↻")
+            reset.setFixedWidth(26)
+            reset.setStyleSheet("font-size: 14px;")
+            reset.setToolTip("Reset to recommended default for this material")
             reset.clicked.connect(reset_fn)
             rl.addWidget(reset)
             if help_key in HELP_TEXTS:

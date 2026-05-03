@@ -119,6 +119,11 @@ class ControlPanel(QWidget):
 
         self._port_combo = QComboBox()
         self._port_combo.setMinimumWidth(260)
+        self._port_combo.setToolTip(
+            "USB serial port your CNC is connected to. Lunyee/3018-class "
+            "machines typically show up as a CH340 device. Click ↻ to "
+            "rescan after plugging in."
+        )
 
         self._refresh_btn = QPushButton("↻")
         self._refresh_btn.setFixedWidth(28)
@@ -126,6 +131,10 @@ class ControlPanel(QWidget):
         self._refresh_btn.clicked.connect(self._refresh_ports)
 
         self._connect_btn = QPushButton("Connect")
+        self._connect_btn.setToolTip(
+            "Open a serial connection to the selected port and start polling "
+            "GRBL status. Click again to disconnect."
+        )
         self._connect_btn.clicked.connect(self._on_connect_clicked)
 
         self._grbl_config_btn = QPushButton("GRBL Config…")
@@ -219,6 +228,7 @@ class ControlPanel(QWidget):
             btn = QPushButton(label)
             btn.setCheckable(True)
             btn.setFixedWidth(40)
+            btn.setToolTip(f"Each jog button moves the bit {label} mm")
             self._step_group.addButton(btn)
             self._step_buttons[value] = btn
             step_row.addWidget(btn)
@@ -230,18 +240,19 @@ class ControlPanel(QWidget):
         grid = QGridLayout()
         grid.setSpacing(4)
 
-        def jog_btn(label: str, axis: str, sign: int) -> QPushButton:
+        def jog_btn(label: str, axis: str, sign: int, tip: str) -> QPushButton:
             btn = QPushButton(label)
             btn.setFixedSize(46, 36)
+            btn.setToolTip(tip)
             btn.clicked.connect(lambda _=False, a=axis, s=sign: self._jog(a, s))
             return btn
 
-        self._xminus = jog_btn("X−", "X", -1)
-        self._xplus = jog_btn("X+", "X", +1)
-        self._yminus = jog_btn("Y−", "Y", -1)
-        self._yplus = jog_btn("Y+", "Y", +1)
-        self._zminus = jog_btn("Z−", "Z", -1)
-        self._zplus = jog_btn("Z+", "Z", +1)
+        self._xminus = jog_btn("X−", "X", -1, "Jog the bit left by the selected step")
+        self._xplus  = jog_btn("X+", "X", +1, "Jog the bit right by the selected step")
+        self._yminus = jog_btn("Y−", "Y", -1, "Jog the bit toward you by the selected step")
+        self._yplus  = jog_btn("Y+", "Y", +1, "Jog the bit away from you by the selected step")
+        self._zminus = jog_btn("Z−", "Z", -1, "Jog the bit down by the selected step")
+        self._zplus  = jog_btn("Z+", "Z", +1, "Jog the bit up by the selected step")
 
         # Go to 0,0,0 — moves the bit to the existing work zero (does NOT
         # change the zero, so it lives with the jog controls instead of
@@ -333,6 +344,16 @@ class ControlPanel(QWidget):
         self._sim_plug_btn = QPushButton("▶ Plug")
         self._sim_pause_btn = QPushButton("⏸")
         self._sim_stop_btn = QPushButton("⏹")
+        self._sim_pocket_btn.setToolTip(
+            "Simulate the pocket cut on the canvas — animated bit position, "
+            "no machine connection needed."
+        )
+        self._sim_plug_btn.setToolTip(
+            "Simulate the plug cut on the canvas — animated bit position, "
+            "no machine connection needed."
+        )
+        self._sim_pause_btn.setToolTip("Pause the running simulation")
+        self._sim_stop_btn.setToolTip("Stop the simulation and reset to the start")
         self._sim_pocket_btn.clicked.connect(self.simulatePocketRequested.emit)
         self._sim_plug_btn.clicked.connect(self.simulatePlugRequested.emit)
         self._sim_pause_btn.clicked.connect(self.simulatePauseRequested.emit)
@@ -354,6 +375,9 @@ class ControlPanel(QWidget):
         self._sim_speed_slider.setMaximum(100)
         self._sim_speed_slider.setValue(10)
         self._sim_speed_slider.setMinimumWidth(120)
+        self._sim_speed_slider.setToolTip(
+            "Simulation playback speed. 1× = realtime, 100× = very fast preview."
+        )
         self._sim_speed_label = QLabel("10×")
         self._sim_speed_label.setMinimumWidth(36)
         self._sim_speed_slider.valueChanged.connect(self._on_sim_speed)

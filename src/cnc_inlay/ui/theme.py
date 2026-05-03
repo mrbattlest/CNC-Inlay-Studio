@@ -77,7 +77,7 @@ def apply_theme(app: QApplication) -> None:
             background-color: {PANEL_ELEVATED.name()}; color: {TEXT.name()};
             border: 1px solid {GRID.name()}; border-radius: 6px; padding: 7px 12px;
         }}
-        QPushButton:hover {{ border-color: {ACCENT.name()}; }}
+        QPushButton:hover {{ border-color: {ACCENT.name()}; color: {ACCENT.name()}; }}
         QPushButton:disabled {{ color: {TEXT_DIM.name()}; }}
         QComboBox, QDoubleSpinBox, QSpinBox {{
             background-color: {PANEL.name()}; color: {TEXT.name()};
