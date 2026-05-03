@@ -24,10 +24,18 @@ def main() -> int:
         return _bg_worker_main()
 
     # Lazy imports keep the worker subprocess clean of Qt.
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
     from cnc_inlay.ui.main_window import MainWindow
     from cnc_inlay.ui.theme import apply_theme
+
+    # MUST be set before QApplication is constructed. Without this, the
+    # QOpenGLWidgets in a second top-level window (File → New Project
+    # Window) get isolated GL contexts on macOS and silently fail to
+    # render the bed grid + screw circles. Symptom: only the GLTextItem
+    # axis labels (which use Qt's painter, not raw GL) show up.
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
 
     app = QApplication(sys.argv)
     app.setApplicationName("CNC Inlay Studio")
