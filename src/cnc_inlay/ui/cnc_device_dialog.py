@@ -68,6 +68,16 @@ class MyCNCDeviceDialog(QDialog):
         # Left: list of machines + "Custom".
         self._list = QListWidget()
         self._list.setMinimumWidth(280)
+        # Generous per-row padding so each machine name is easy to
+        # click and the list reads as a vertical menu rather than a
+        # tightly-packed scroll.
+        self._list.setStyleSheet(
+            "QListWidget { padding: 6px; outline: 0; }"
+            "QListWidget::item { padding: 10px 12px; margin: 4px 2px; "
+            "  border-radius: 6px; }"
+            "QListWidget::item:hover { background: rgba(245, 166, 35, 30); }"
+            "QListWidget::item:selected { background: #f5a623; color: #1d1f24; }"
+        )
         for m in self._catalog:
             item = QListWidgetItem(m.name)
             item.setData(Qt.UserRole, m.key)
