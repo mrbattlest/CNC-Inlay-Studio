@@ -1472,33 +1472,56 @@ class MainWindow(QMainWindow):
 
     def _on_save_surfacing_settings(self, settings: dict) -> None:
         """Settings → Surface plug backing → Save: stash the dict on
-        the window and mark the project dirty so it lands in the
-        .inlay file on next save."""
+        the window, mark the project dirty, and redraw the Surfacing
+        tab's 3D preview so the canvas reflects any bit/depth/panel
+        change the user just committed."""
         self._surfacing_settings = dict(settings)
         self._is_dirty = True
+        # If the saved bit_name matches an entry in the sidebar's
+        # surfacing dropdown, sync the dropdown so subsequent previews
+        # (and the next dialog open) all agree on the bit.
+        bit_name = settings.get("bit_name")
+        if bit_name:
+            combo = self._controls.surfacing_combo
+            for i in range(combo.count()):
+                if combo.itemText(i) == bit_name:
+                    if combo.currentIndex() != i:
+                        combo.setCurrentIndex(i)  # fires param-change → preview
+                    break
+        self._refresh_surfacing_preview()
         self._set_status(
             "Surfacing settings saved into the project — Save Project to persist to disk."
         )
 
     def _refresh_surfacing_preview(self) -> None:
-        """Generate a default surfacing plan (using current params and
-        the user's selected surfacing bit) and push the chains to the
-        Surfacing tab. Skips silently when no surfacing bit is set."""
+        """Generate a surfacing plan and push the chains to the
+        Surfacing tab. Honours saved settings (panel dims, depth,
+        pass depth, feed, rpm) from the Surface plug backing dialog
+        when present so the canvas always reflects the latest saved
+        state. Skips silently when no surfacing bit is set."""
         bit = self._controls.current_surfacing_bit()
         if bit is None or self._design is None:
             self._surfacing_canvas3d.set_pocket_clear([])
             return
         params = self._controls.current_params()
-        panel_w = params.pocket_stock_width_mm or self._design.width_mm
-        panel_h = params.pocket_stock_height_mm or self._design.height_mm
+        s = self._surfacing_settings or {}
+        panel_w = float(s.get("panel_w_mm") or params.pocket_stock_width_mm or self._design.width_mm)
+        panel_h = float(s.get("panel_h_mm") or params.pocket_stock_height_mm or self._design.height_mm)
+        glue_gap = params.glue_gap_mm
+        depth_to_remove = float(s.get("depth_to_remove_mm") or (glue_gap + 0.20))
+        extra_depth = max(0.0, depth_to_remove - glue_gap)
         from cnc_inlay.core.pipeline import compute_surfacing_plan
         plan = compute_surfacing_plan(
             bit,
             stock_width_mm=panel_w,
             stock_height_mm=panel_h,
             pocket_depth_mm=params.pocket_depth_mm,
-            glue_gap_mm=params.glue_gap_mm,
+            glue_gap_mm=glue_gap,
             plug_thickness_mm=params.plug_thickness_mm,
+            feed_mm_min=float(s.get("feed_mm_min", 1000.0)),
+            rpm=int(s.get("rpm", 10000)),
+            pass_depth_mm=float(s.get("pass_depth_mm", 0.4)),
+            extra_depth_mm=extra_depth,
         )
         if not plan.chains:
             return

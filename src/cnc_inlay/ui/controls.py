@@ -1020,31 +1020,15 @@ class ControlsPanel(QWidget):
         self._refresh_roughing_options()
 
         # Surfacing bit — used to plane the assembled-panel back flat
-        # after gluing. Drives the Surfacing tab's preview chains and
-        # the Settings → Surface plug backing dialog's default bit.
-        # Includes both dedicated surfacing bits and large flat
-        # endmills (≥6 mm) since the latter can do small surfacing
-        # jobs without swapping tools.
-        surfacing_candidates = [
-            b for b in bits if b.type == "surfacing"
-        ] + sorted(
-            [b for b in bits if b.type == "endmill" and b.diameter_mm >= 6.0],
-            key=lambda b: -b.diameter_mm,
-        )
+        # after gluing. Pool = dedicated surfacing bits + the endmills
+        # currently checked in either side's roughing list. If the user
+        # has chosen no roughing bits, only dedicated surfacers appear
+        # (a small finishing endmill is the wrong tool for surfacing).
         self.surfacing_combo = QComboBox()
         self.surfacing_combo.setMaximumWidth(220)
-        self.surfacing_combo.addItem("(none — surfacing preview off)", None)
-        for b in surfacing_candidates:
-            self.surfacing_combo.addItem(b.name, b)
-        # Default to the first available surfacing candidate (largest
-        # dedicated surfacing bit, falling back to the largest flat
-        # endmill ≥6mm) so the Surfacing tab populates immediately on
-        # Preview without forcing the user to find the new dropdown.
-        # If they don't want the surfacing pass, they can pick (none).
-        if surfacing_candidates:
-            self.surfacing_combo.setCurrentIndex(1)
         self.surfacing_combo.currentIndexChanged.connect(self._on_param_change)
         bf.addRow("Surfacing bit:", self.surfacing_combo)
+        self._refresh_surfacing_combo()
 
         # Recommendation button — opens a popup with any warnings or tips.
         # The previous inline label crammed long text into a narrow sidebar
@@ -1577,9 +1561,68 @@ class ControlsPanel(QWidget):
                 cb.setChecked(prior_selection.get(bit.name, False))
                 cb.toggled.connect(self._on_param_change)
                 cb.toggled.connect(self._refresh_speeds_tabs)
+                cb.toggled.connect(self._refresh_surfacing_combo)
                 layout.addWidget(cb)
                 checks[bit.name] = cb
         self._refresh_speeds_tabs()
+        self._refresh_surfacing_combo()
+
+    def _checked_roughing_bits(self) -> list[Bit]:
+        """Currently-ticked roughing endmills across both sides, deduped
+        by name, sorted by descending diameter."""
+        seen: dict[str, Bit] = {}
+        for side in ("pocket", "plug"):
+            checks: dict[str, QCheckBox] = getattr(
+                self, f"_{side}_roughing_checks", {}
+            )
+            for name, cb in checks.items():
+                if cb.isChecked() and name not in seen:
+                    bit = next(
+                        (b for b in self._all_endmills if b.name == name), None
+                    )
+                    if bit is not None:
+                        seen[name] = bit
+        return sorted(seen.values(), key=lambda b: -b.diameter_mm)
+
+    def _refresh_surfacing_combo(self) -> None:
+        """Rebuild the Surfacing-bit dropdown from dedicated surfacing
+        bits + currently-checked roughing endmills. Preserves the user's
+        selection if still in the pool; otherwise auto-picks the largest
+        remaining candidate so the Surfacing tab stays populated when
+        the user toggles a roughing bit off."""
+        if not hasattr(self, "surfacing_combo"):
+            return
+        prev = self.surfacing_combo.currentData()
+        prev_name = prev.name if prev is not None else None
+        surfacers = sorted(
+            [b for b in self._bits if b.type == "surfacing"],
+            key=lambda b: -b.diameter_mm,
+        )
+        roughing = self._checked_roughing_bits()
+        seen: set[str] = set()
+        candidates: list[Bit] = []
+        for b in surfacers + roughing:
+            if b.name not in seen:
+                candidates.append(b)
+                seen.add(b.name)
+        self.surfacing_combo.blockSignals(True)
+        self.surfacing_combo.clear()
+        self.surfacing_combo.addItem("(none — surfacing preview off)", None)
+        for b in candidates:
+            self.surfacing_combo.addItem(b.name, b)
+        restored = False
+        if prev_name:
+            for i in range(self.surfacing_combo.count()):
+                if self.surfacing_combo.itemText(i) == prev_name:
+                    self.surfacing_combo.setCurrentIndex(i)
+                    restored = True
+                    break
+        if not restored and candidates:
+            self.surfacing_combo.setCurrentIndex(1)
+        self.surfacing_combo.blockSignals(False)
+        # Selection may have changed — let the rest of the app know.
+        if not restored:
+            self._on_param_change()
 
     def _refresh_bit_specs(self) -> None:
         vbit = self.vbit_combo.currentData()
@@ -1704,36 +1747,9 @@ class ControlsPanel(QWidget):
                     break
         self.vbit_combo.blockSignals(False)
 
-        # Rebuild surfacing combo. Same scheme: surfacing bits +
-        # large flat endmills (≥6mm), with "(none)" first.
-        prev_surfacing_name = (
-            self.surfacing_combo.currentData().name
-            if self.surfacing_combo.currentData() else None
-        )
-        surfacing_candidates = [
-            b for b in bits if b.type == "surfacing"
-        ] + sorted(
-            [b for b in bits if b.type == "endmill" and b.diameter_mm >= 6.0],
-            key=lambda b: -b.diameter_mm,
-        )
-        self.surfacing_combo.blockSignals(True)
-        self.surfacing_combo.clear()
-        self.surfacing_combo.addItem("(none — surfacing preview off)", None)
-        for b in surfacing_candidates:
-            self.surfacing_combo.addItem(b.name, b)
-        # Restore previous selection if still in the library; otherwise
-        # default to the largest surfacing candidate so the preview
-        # populates without forcing the user to re-pick.
-        restored = False
-        if prev_surfacing_name:
-            for i in range(self.surfacing_combo.count()):
-                if self.surfacing_combo.itemText(i) == prev_surfacing_name:
-                    self.surfacing_combo.setCurrentIndex(i)
-                    restored = True
-                    break
-        if not restored and surfacing_candidates:
-            self.surfacing_combo.setCurrentIndex(1)
-        self.surfacing_combo.blockSignals(False)
+        # Rebuild surfacing combo from the new library + currently-
+        # checked roughing bits.
+        self._refresh_surfacing_combo()
 
         self._suppress_signals = False
         # Rebuild downstream UI bits that depend on the library.
