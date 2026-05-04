@@ -1005,6 +1005,13 @@ class ControlsPanel(QWidget):
         self.surfacing_combo.addItem("(none — surfacing preview off)", None)
         for b in surfacing_candidates:
             self.surfacing_combo.addItem(b.name, b)
+        # Default to the first available surfacing candidate (largest
+        # dedicated surfacing bit, falling back to the largest flat
+        # endmill ≥6mm) so the Surfacing tab populates immediately on
+        # Preview without forcing the user to find the new dropdown.
+        # If they don't want the surfacing pass, they can pick (none).
+        if surfacing_candidates:
+            self.surfacing_combo.setCurrentIndex(1)
         self.surfacing_combo.currentIndexChanged.connect(self._on_param_change)
         bf.addRow("Surfacing bit:", self.surfacing_combo)
 
@@ -1680,11 +1687,18 @@ class ControlsPanel(QWidget):
         self.surfacing_combo.addItem("(none — surfacing preview off)", None)
         for b in surfacing_candidates:
             self.surfacing_combo.addItem(b.name, b)
+        # Restore previous selection if still in the library; otherwise
+        # default to the largest surfacing candidate so the preview
+        # populates without forcing the user to re-pick.
+        restored = False
         if prev_surfacing_name:
             for i in range(self.surfacing_combo.count()):
                 if self.surfacing_combo.itemText(i) == prev_surfacing_name:
                     self.surfacing_combo.setCurrentIndex(i)
+                    restored = True
                     break
+        if not restored and surfacing_candidates:
+            self.surfacing_combo.setCurrentIndex(1)
         self.surfacing_combo.blockSignals(False)
 
         self._suppress_signals = False
