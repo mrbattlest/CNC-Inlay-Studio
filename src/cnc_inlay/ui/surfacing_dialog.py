@@ -204,14 +204,15 @@ class SurfacingDialog(QDialog):
         outer.addWidget(safety)
 
         # --- Buttons ---
+        # Layout: [Cancel] [stretch] [Run on Machine] [Save]. Cancel
+        # sits on the lower-left so an accidental Esc-style "back out"
+        # is in the easiest place to reach. Save sits on the lower-
+        # right (the customary "primary commit" spot) so the
+        # save-without-running flow is a clean right-side click.
         btn_row = QHBoxLayout()
-        save_btn = QPushButton("💾 Save")
-        save_btn.setToolTip(
-            "Save these settings into the .inlay project file so they "
-            "pre-fill next time you open this dialog. Doesn't run anything."
-        )
-        save_btn.clicked.connect(self._on_save_settings_clicked)
-        btn_row.addWidget(save_btn)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
         btn_row.addStretch(1)
         self._run_btn = QPushButton("▶ Run on Machine")
         self._run_btn.setStyleSheet(
@@ -229,9 +230,13 @@ class SurfacingDialog(QDialog):
             )
         self._run_btn.clicked.connect(self._on_run_clicked)
         btn_row.addWidget(self._run_btn)
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(cancel_btn)
+        save_btn = QPushButton("💾 Save")
+        save_btn.setToolTip(
+            "Save these settings into the .inlay project file so they "
+            "pre-fill next time you open this dialog. Doesn't run anything."
+        )
+        save_btn.clicked.connect(self._on_save_settings_clicked)
+        btn_row.addWidget(save_btn)
         outer.addLayout(btn_row)
 
         # Restore previously-saved values (if any) AFTER all widgets
