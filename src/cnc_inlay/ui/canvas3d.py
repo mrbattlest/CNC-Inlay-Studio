@@ -104,6 +104,12 @@ class Canvas3D(gl.GLViewWidget):
         # in which case the block defaults to the design extent + pad.
         self._stock_footprint_w_mm: float = 0.0
         self._stock_footprint_h_mm: float = 0.0
+        # Optional vertical breakdown of the wood block into named
+        # coloured layers (e.g. pocket / glue gap / plug for the
+        # surfacing tab). When set, _redraw_stock draws each layer's
+        # wireframe in its own colour and stacks them. None = single
+        # block (legacy behaviour).
+        self._stock_layers: list[tuple[float, tuple[float, float, float, float], str]] | None = None
         self._vcarve_chains: list[Chain] = []
         self._pocket_chains: list[Chain] = []
         self._boundary_chains: list[Chain] = []
@@ -396,7 +402,30 @@ class Canvas3D(gl.GLViewWidget):
         self._stock_footprint_w_mm = max(0.0, width_mm)
         self._stock_footprint_h_mm = max(0.0, height_mm)
         self._stock_thickness_mm = max(0.0, thickness_mm)
-        # Re-emit everything so the lift takes effect immediately.
+        self._stock_layers = None  # single-block mode
+        self._refresh_geometry()
+
+    def set_stock_layers(
+        self,
+        width_mm: float,
+        height_mm: float,
+        layers: list[tuple[float, tuple[float, float, float, float], str]],
+    ) -> None:
+        """Set a layered wood-block (e.g. pocket | glue | plug for the
+        surfacing tab). Each layer is (thickness_mm, rgba, label).
+        Layers stack from Z=0 upward. The total thickness drives the
+        toolpath Z-lift just like single-block mode."""
+        if not layers:
+            return
+        self._stock_footprint_w_mm = max(0.0, width_mm)
+        self._stock_footprint_h_mm = max(0.0, height_mm)
+        self._stock_layers = list(layers)
+        self._stock_thickness_mm = sum(max(0.0, l[0]) for l in layers)
+        self._refresh_geometry()
+
+    def _refresh_geometry(self) -> None:
+        """Re-emit polygon outline + stock + chain layers after a
+        geometry-affecting change."""
         self._redraw_polygon()
         self._redraw_stock()
         self._redraw_layer(self._vcarve_chains, self._vcarve_items, _VCARVE_RGBA)
@@ -427,17 +456,43 @@ class Canvas3D(gl.GLViewWidget):
             pad = max(w, h) * 0.05 + 2
             x0, x1 = -w / 2 - pad, w / 2 + pad
             y0, y1 = -h / 2 - pad, h / 2 + pad
-        # Block extends from Z=0 (bottom = bed surface) up to
-        # Z=+thickness (top of wood). Toolpaths drawn elsewhere are
-        # lifted by _z_lift() so cuts descend INTO this block rather
-        # than appearing to plunge through the bed.
+
+        # Layered breakdown (e.g. pocket | glue gap | plug for the
+        # Surfacing tab) takes precedence when set. Each layer's
+        # bounding wireframe is drawn in its own colour so the user can
+        # see the structure of the assembled panel at a glance.
+        if self._stock_layers:
+            z_cursor = 0.0
+            for thickness, rgba, _label in self._stock_layers:
+                if thickness <= 0:
+                    continue
+                z_bot = z_cursor
+                z_top = z_cursor + thickness
+                # Top + bottom rectangles at this layer's faces.
+                top = np.array(
+                    [[x0, y0, z_top], [x1, y0, z_top], [x1, y1, z_top],
+                     [x0, y1, z_top], [x0, y0, z_top]],
+                    dtype=np.float32,
+                )
+                bot = np.array(
+                    [[x0, y0, z_bot], [x1, y0, z_bot], [x1, y1, z_bot],
+                     [x0, y1, z_bot], [x0, y0, z_bot]],
+                    dtype=np.float32,
+                )
+                self._add_line(top, rgba, 2.0, self._stock_items)
+                self._add_line(bot, rgba, 1.2, self._stock_items)
+                for x, y in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]:
+                    pts = np.array(
+                        [[x, y, z_top], [x, y, z_bot]], dtype=np.float32,
+                    )
+                    self._add_line(pts, rgba, 1.2, self._stock_items)
+                z_cursor = z_top
+            return
+
+        # Single-block fallback (pocket / plug canvases use this).
         thickness = self._stock_thickness_mm if self._stock_thickness_mm > 0 else self._stock_depth_mm
         z_bot = 0.0
         z_top = thickness
-
-        # Brighter / thicker wireframe than the previous rendering so the
-        # block reads as a 3D object rather than a faint outline. Top
-        # face gets the most emphasis (it's the working surface).
         top_color = (0.78, 0.62, 0.42, 1.0)   # warm wood-tone
         body_color = (0.52, 0.42, 0.30, 0.85)
         top = np.array(

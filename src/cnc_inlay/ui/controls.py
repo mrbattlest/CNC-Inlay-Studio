@@ -988,6 +988,26 @@ class ControlsPanel(QWidget):
         bf.addRow(self.plug_roughing_box)
         self._refresh_roughing_options()
 
+        # Surfacing bit — used to plane the assembled-panel back flat
+        # after gluing. Drives the Surfacing tab's preview chains and
+        # the Settings → Surface plug backing dialog's default bit.
+        # Includes both dedicated surfacing bits and large flat
+        # endmills (≥6 mm) since the latter can do small surfacing
+        # jobs without swapping tools.
+        surfacing_candidates = [
+            b for b in bits if b.type == "surfacing"
+        ] + sorted(
+            [b for b in bits if b.type == "endmill" and b.diameter_mm >= 6.0],
+            key=lambda b: -b.diameter_mm,
+        )
+        self.surfacing_combo = QComboBox()
+        self.surfacing_combo.setMaximumWidth(220)
+        self.surfacing_combo.addItem("(none — surfacing preview off)", None)
+        for b in surfacing_candidates:
+            self.surfacing_combo.addItem(b.name, b)
+        self.surfacing_combo.currentIndexChanged.connect(self._on_param_change)
+        bf.addRow("Surfacing bit:", self.surfacing_combo)
+
         # Recommendation button — opens a popup with any warnings or tips.
         # The previous inline label crammed long text into a narrow sidebar
         # that couldn't be read; a button + dedicated dialog gives the text
@@ -1643,6 +1663,30 @@ class ControlsPanel(QWidget):
                     break
         self.vbit_combo.blockSignals(False)
 
+        # Rebuild surfacing combo. Same scheme: surfacing bits +
+        # large flat endmills (≥6mm), with "(none)" first.
+        prev_surfacing_name = (
+            self.surfacing_combo.currentData().name
+            if self.surfacing_combo.currentData() else None
+        )
+        surfacing_candidates = [
+            b for b in bits if b.type == "surfacing"
+        ] + sorted(
+            [b for b in bits if b.type == "endmill" and b.diameter_mm >= 6.0],
+            key=lambda b: -b.diameter_mm,
+        )
+        self.surfacing_combo.blockSignals(True)
+        self.surfacing_combo.clear()
+        self.surfacing_combo.addItem("(none — surfacing preview off)", None)
+        for b in surfacing_candidates:
+            self.surfacing_combo.addItem(b.name, b)
+        if prev_surfacing_name:
+            for i in range(self.surfacing_combo.count()):
+                if self.surfacing_combo.itemText(i) == prev_surfacing_name:
+                    self.surfacing_combo.setCurrentIndex(i)
+                    break
+        self.surfacing_combo.blockSignals(False)
+
         self._suppress_signals = False
         # Rebuild downstream UI bits that depend on the library.
         self._refresh_bit_specs()
@@ -1855,6 +1899,13 @@ class ControlsPanel(QWidget):
 
     def current_endmill(self) -> Bit:
         return self.endmill_combo.currentData()
+
+    def current_surfacing_bit(self) -> Bit | None:
+        """Returns the bit selected for surfacing the assembled panel,
+        or None if the user has chosen "(none)". Drives Preview's
+        auto-surfacing pass and the Settings → Surface plug backing
+        dialog's default bit."""
+        return self.surfacing_combo.currentData()
 
     def current_pocket_material(self) -> Material:
         return self.pocket_material_combo.currentData()

@@ -805,13 +805,16 @@ class MainWindow(QMainWindow):
         l_h = params.plug_stock_height_mm or self._design.height_mm
         l_t = params.plug_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
         self._plug_canvas3d.set_stock_block(l_w, l_h, l_t)
-        # Surfacing: combined assembled-panel block (pocket_thickness +
-        # glue_gap + plug_thickness). Footprint = pocket stock since the
-        # panel sits on the pocket-side wood. Without this, the
-        # Surfacing tab's wood block defaults to the small pocket-depth
-        # fallback and looks like just the plug stock.
-        s_t = max(0.5, p_t + params.glue_gap_mm + l_t)
-        self._surfacing_canvas3d.set_stock_block(p_w, p_h, s_t)
+        # Surfacing: combined assembled-panel block as 3 stacked
+        # coloured layers — pocket stock (warm brown), glue gap (amber
+        # band, often quite thin so highlighted in a higher-contrast
+        # colour), and plug backing (lighter wood tone). Footprint =
+        # pocket stock because the assembled panel sits on the pocket
+        # wood.
+        pocket_layer = (p_t, (0.62, 0.45, 0.28, 1.0), "Pocket")
+        glue_layer = (max(0.05, params.glue_gap_mm), (0.95, 0.70, 0.20, 1.0), "Glue gap")
+        plug_layer = (l_t, (0.85, 0.72, 0.50, 1.0), "Plug backing")
+        self._surfacing_canvas3d.set_stock_layers(p_w, p_h, [pocket_layer, glue_layer, plug_layer])
 
     def _refresh_stock_outlines(self) -> None:
         """Re-render the dashed stock rectangles when the user edits W/H values
@@ -1442,22 +1445,42 @@ class MainWindow(QMainWindow):
         dlg.saveRequested.connect(self._on_save_surfacing_gcode)
         dlg.exec()
 
+    def _refresh_surfacing_preview(self) -> None:
+        """Generate a default surfacing plan (using current params and
+        the user's selected surfacing bit) and push the chains to the
+        Surfacing tab. Skips silently when no surfacing bit is set."""
+        bit = self._controls.current_surfacing_bit()
+        if bit is None or self._design is None:
+            self._surfacing_canvas3d.set_pocket_clear([])
+            return
+        params = self._controls.current_params()
+        panel_w = params.pocket_stock_width_mm or self._design.width_mm
+        panel_h = params.pocket_stock_height_mm or self._design.height_mm
+        from cnc_inlay.core.pipeline import compute_surfacing_plan
+        plan = compute_surfacing_plan(
+            bit,
+            stock_width_mm=panel_w,
+            stock_height_mm=panel_h,
+            pocket_depth_mm=params.pocket_depth_mm,
+            glue_gap_mm=params.glue_gap_mm,
+            plug_thickness_mm=params.plug_thickness_mm,
+        )
+        if not plan.chains:
+            return
+        self._push_surfacing_to_canvas(plan, panel_w, panel_h)
+
     def _push_surfacing_to_canvas(
         self, plan, panel_w_mm: float, panel_h_mm: float, combined_z_mm: float | None = None,
     ) -> None:
         """Render a surfacing plan in the Surfacing tab's 3D canvas.
 
-        Combined-assembly Z (pocket_thickness + glue_gap + plug_thickness)
-        either comes from the dialog (where the user can override the
-        auto-calculated default to match their measured panel) or is
-        re-derived here from the project params.
+        Re-pushes the layered wood-block (pocket / glue / plug) from
+        current params before drawing the chains, so the visual is
+        always in sync with the sidebar values.
         """
-        if combined_z_mm is None:
-            params = self._controls.current_params()
-            pt = params.pocket_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
-            lt = params.plug_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
-            combined_z_mm = max(0.5, pt + params.glue_gap_mm + lt)
-        self._surfacing_canvas3d.set_stock_block(panel_w_mm, panel_h_mm, combined_z_mm)
+        # Make sure the layered block reflects current params. This is
+        # idempotent and cheap.
+        self._push_stock_blocks_to_canvases()
         # Reuse the existing chain renderer — surfacing chains are just
         # closed-loop-style polylines at depth, the same shape the
         # pocket-clear path renders.
@@ -1949,6 +1972,13 @@ class MainWindow(QMainWindow):
         # the operator can drag to a line, see the bit at that XYZ in the
         # 3D preview, and start cutting from there.
         self._refresh_scrub_programs(result, endmill)
+        # Surfacing preview — if the user has picked a surfacing bit
+        # in the sidebar, generate the raster pass so it shows up in
+        # the Surfacing tab alongside Pocket and Plug previews. Same
+        # auto-derived parameters the Surface plug backing dialog
+        # uses (depth = glue_gap + 0.20 mm safety, panel = pocket
+        # stock dimensions).
+        self._refresh_surfacing_preview()
         # Push fresh values into the Setup Guide if it's visible.
         self._on_params_changed_refresh_guide()
 
