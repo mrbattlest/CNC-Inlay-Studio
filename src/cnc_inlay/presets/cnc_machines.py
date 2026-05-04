@@ -51,7 +51,11 @@ def load_catalog() -> list[CNCMachine]:
             bed_height_mm=float(d["bed_height_mm"]),
             screw_hole_diameter_mm=float(d.get("screw_hole_diameter_mm", 0.0)),
             screw_hole_label_positions=[
-                (int(p[0]), int(p[1]))
+                # Lunyee's documented row spacing isn't a whole number
+                # (6.2825 / 11.8475 / 17.2825 / 22.8475 mm), so positions
+                # must be stored as floats. int() would round 6.2825 to
+                # 6 and stack three holes on top of each other.
+                (float(p[0]), float(p[1]))
                 for p in d.get("screw_hole_label_positions", [])
             ],
             bed_label_x_max=int(d.get("bed_label_x_max", 0)),

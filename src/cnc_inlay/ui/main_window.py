@@ -1643,14 +1643,18 @@ class MainWindow(QMainWindow):
         then re-renders its bed grid, re-fits the 2D view, and resizes
         the 3D GLGridItem so the new bed envelope is visible."""
         from cnc_inlay.presets.cnc_machines import get_active_machine
-        from cnc_inlay.ui.canvas import (
-            BED_HEIGHT_MM, BED_WIDTH_MM, apply_active_machine,
-        )
+        from cnc_inlay.ui.canvas import apply_active_machine
         from cnc_inlay.ui.canvas3d import apply_active_machine_3d
-        import pyqtgraph as pg
         machine = get_active_machine()
         apply_active_machine(machine)
         apply_active_machine_3d(machine)
+        # Read the new bed dimensions DIRECTLY from the machine object,
+        # not via re-importing canvas.BED_WIDTH_MM — Python binds the
+        # name to the value at import time, so an `import BED_WIDTH_MM`
+        # would capture the OLD value (before apply_active_machine)
+        # and the resize call would no-op.
+        new_w = machine.bed_width_mm
+        new_h = machine.bed_height_mm
         for win in MainWindow._open_windows:
             try:
                 # 2D canvases: redraw the painted background AND re-fit
@@ -1664,7 +1668,7 @@ class MainWindow(QMainWindow):
                 # the bed wireframe + screw circles + axis labels.
                 for c in win._all_3d_canvases():
                     if c._grid is not None:
-                        c._grid.setSize(x=BED_WIDTH_MM, y=BED_HEIGHT_MM)
+                        c._grid.setSize(x=new_w, y=new_h)
                         c._grid.setSpacing(10, 10)
                     c._draw_bed()
                     # Camera distance was sized for the old bed — pull
