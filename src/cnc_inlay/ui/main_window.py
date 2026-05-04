@@ -1976,6 +1976,9 @@ class MainWindow(QMainWindow):
             "<li>Manually jog the bit to a safe Z (well above the wood).</li>"
             "<li>Re-zero Z if you've changed bits since the last cut.</li>"
             "</ul>"
+            "<p><b>The spindle is started automatically</b> with a 3-second "
+            "ramp-up dwell before the first plunge — you don't need to send "
+            "M3 manually.</p>"
             "<p>The bit will start its first move from wherever it is right "
             "now — there is no auto-return to the original cut path.</p>"
         )
@@ -2441,7 +2444,9 @@ class MainWindow(QMainWindow):
         # the scrub bar to advance correctly and for an accurate "elapsed
         # / total estimated" readout.
         self._streaming_start_line = start_line
-        self._streaming_preamble_len = 5 if start_line > 0 else 0
+        # Streamer prepends a 7-line modal-state + M3 + dwell preamble on
+        # any non-zero start_line. Keep this in sync with control/streamer.py.
+        self._streaming_preamble_len = 7 if start_line > 0 else 0
 
         # Build a checkpoint for crash recovery — saved every couple of seconds
         # while the cut runs.

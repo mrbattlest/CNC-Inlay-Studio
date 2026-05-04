@@ -72,7 +72,23 @@ class Streamer:
             out.append(stripped)
         if start_line > 0 and start_line < len(out):
             # Re-establish modal state and lift to safe Z before resuming.
-            preamble = ["G21", "G90", "G17", "G54", "G0 Z5"]
+            # Critically, also restart the spindle: the next move out of
+            # the preamble is typically a plunge, and without a fresh
+            # M3 + ramp-up dwell here the bit plunges into wood with the
+            # spindle off — which snapped a user's bit. Scan backward
+            # from the resume point for the most recent M3 in the program
+            # (carries the right RPM for the current bit). Defaults to
+            # M3 S10000 if the gcode somehow has none.
+            m3_line = "M3 S10000"
+            for j in range(min(start_line, len(out)) - 1, -1, -1):
+                if out[j].upper().startswith("M3"):
+                    m3_line = out[j]
+                    break
+            preamble = [
+                "G21", "G90", "G17", "G54", "G0 Z5",
+                m3_line,
+                "G4 P3",  # spindle ramp-up dwell — same as fresh-start emit
+            ]
             # Tool-change indices need to shift by len(preamble) - start_line.
             shift = len(preamble) - start_line
             self.tool_change_at = {
