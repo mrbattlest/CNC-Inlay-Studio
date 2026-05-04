@@ -47,9 +47,20 @@ _TRAVEL_RGBA = (TRAVEL.redF(), TRAVEL.greenF(), TRAVEL.blueF(), 1.0)
 _MACHINE_BIT_RGBA = (MACHINE_BIT.redF(), MACHINE_BIT.greenF(), MACHINE_BIT.blueF(), 1.0)
 _SAFE_Z_MM = 5.0
 
-# Lunyee 3018 PRO MAX bed envelope.
-BED_WIDTH_MM = 270.0   # Lunyee 3018 PRO MAX measured X travel
-BED_HEIGHT_MM = 150.0  # Lunyee 3018 PRO MAX measured Y travel
+# Bed envelope — replaced at app start by Settings → My CNC Device.
+# Mutable globals so the canvas keeps working regardless of when the
+# active machine is selected. Use ``apply_active_machine_3d()``.
+BED_WIDTH_MM = 270.0
+BED_HEIGHT_MM = 150.0
+
+
+def apply_active_machine_3d(machine) -> None:
+    """Update the module-level 3D bed constants from a CNCMachine
+    profile. Called by main_window on startup + whenever the user
+    changes the active machine."""
+    global BED_WIDTH_MM, BED_HEIGHT_MM
+    BED_WIDTH_MM = float(machine.bed_width_mm)
+    BED_HEIGHT_MM = float(machine.bed_height_mm)
 _BED_RGBA = (0.49, 0.65, 0.58, 0.85)  # muted teal/green
 
 

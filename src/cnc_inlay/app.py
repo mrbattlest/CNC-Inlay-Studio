@@ -29,6 +29,16 @@ def main() -> int:
 
     from cnc_inlay.ui.main_window import MainWindow
     from cnc_inlay.ui.theme import apply_theme
+    # Apply the user's chosen CNC machine BEFORE any canvas is
+    # constructed so the bed envelope they see matches their device.
+    # Falls back silently to the LUNYEE 3018 PRO MAX preset if no
+    # choice has been saved (Settings → My CNC Device sets it).
+    from cnc_inlay.presets.cnc_machines import get_active_machine
+    from cnc_inlay.ui.canvas import apply_active_machine
+    from cnc_inlay.ui.canvas3d import apply_active_machine_3d
+    _active_machine = get_active_machine()
+    apply_active_machine(_active_machine)
+    apply_active_machine_3d(_active_machine)
 
     # MUST be set before QApplication is constructed. Without this, the
     # QOpenGLWidgets in a second top-level window (File → New Project

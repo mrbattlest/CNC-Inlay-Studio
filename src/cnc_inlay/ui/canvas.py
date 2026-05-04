@@ -35,20 +35,22 @@ from cnc_inlay.ui.theme import (
 )
 from cnc_inlay.ui.zoom_toolbar import ViewModeToggle, ZoomToolbar
 
-# Lunyee 3018 PRO MAX bed envelope.
-BED_WIDTH_MM = 270.0   # Lunyee 3018 PRO MAX measured X travel
-BED_HEIGHT_MM = 150.0  # Lunyee 3018 PRO MAX measured Y travel
+# Bed envelope — initialised to the LUNYEE 3018 PRO MAX defaults but
+# replaced at app start by Settings → My CNC Device. Mutable module
+# globals so the canvases keep working regardless of when the active
+# machine is selected. Use ``apply_active_machine()`` to update.
+BED_WIDTH_MM = 270.0
+BED_HEIGHT_MM = 150.0
 
-# Bed surface markings — the physical bed has 1 cm-spaced axis numbering
-# starting at "1" (which sits at physical 0) and going up to "28" (X) / "16"
-# (Y). Numbering offset +1 means label N corresponds to physical (N-1) cm.
+# Bed surface markings — 1 cm-spaced axis numbering. label N = physical
+# (N-1) cm. Bumped to ints when applying a machine profile.
 BED_LABEL_X_MAX = 28
 BED_LABEL_Y_MAX = 16
 
 # Threaded clamp holes drilled into the bed for fixturing. Positions are in
-# the bed's LABEL coordinate space (label 1 = physical 0). 5.65 mm diameter.
-# Source: user-measured. Treating the "0" entries in row 1 as a typo for "1"
-# (the bed's bottom edge); all four rows live ON the bed surface.
+# the bed's LABEL coordinate space (label 1 = physical 0). Empty list means
+# the active machine's bed has no documented clamp pattern (common for
+# everything except the Lunyee 3018 PRO MAX which we measured).
 SCREW_HOLE_DIAMETER_MM = 5.65
 SCREW_HOLE_LABEL_POSITIONS = [
     # row 1 (y=1)
@@ -61,6 +63,20 @@ SCREW_HOLE_LABEL_POSITIONS = [
     (1, 16), (6.2825, 16), (11.8475, 16), (17.2825, 16), (22.8475, 16), (28, 16),
 ]
 _BED_COLOR = "#7ea799"  # muted teal/green for bed boundary
+
+
+def apply_active_machine(machine) -> None:
+    """Update the module-level bed constants from a CNCMachine profile.
+    Called by main_window on startup and whenever the user changes the
+    active machine via Settings → My CNC Device."""
+    global BED_WIDTH_MM, BED_HEIGHT_MM, BED_LABEL_X_MAX, BED_LABEL_Y_MAX
+    global SCREW_HOLE_DIAMETER_MM, SCREW_HOLE_LABEL_POSITIONS
+    BED_WIDTH_MM = float(machine.bed_width_mm)
+    BED_HEIGHT_MM = float(machine.bed_height_mm)
+    BED_LABEL_X_MAX = int(machine.bed_label_x_max) if machine.bed_label_x_max else int(BED_WIDTH_MM // 10)
+    BED_LABEL_Y_MAX = int(machine.bed_label_y_max) if machine.bed_label_y_max else int(BED_HEIGHT_MM // 10)
+    SCREW_HOLE_DIAMETER_MM = float(machine.screw_hole_diameter_mm)
+    SCREW_HOLE_LABEL_POSITIONS = list(machine.screw_hole_label_positions)
 
 ViewMode = str  # "pocket" | "plug"
 

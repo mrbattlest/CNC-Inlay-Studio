@@ -1,0 +1,107 @@
+[
+  {
+    "key": "lunyee_3018_pro_max",
+    "name": "Lunyee 3018 PRO MAX",
+    "bed_width_mm": 270.0,
+    "bed_height_mm": 150.0,
+    "screw_hole_diameter_mm": 5.65,
+    "screw_hole_label_positions": [
+      [1, 1], [1, 16], [4, 1], [4, 16], [7, 1], [7, 16],
+      [10, 1], [10, 16], [13, 1], [13, 16], [16, 1], [16, 16],
+      [19, 1], [19, 16], [22, 1], [22, 16], [25, 1], [25, 16],
+      [28, 1], [28, 16], [1, 4], [1, 13], [28, 4], [28, 13]
+    ],
+    "bed_label_x_max": 28,
+    "bed_label_y_max": 16
+  },
+  {
+    "key": "genmitsu_3018_prover_v2",
+    "name": "SainSmart Genmitsu 3018-PROVer V2",
+    "bed_width_mm": 300.0,
+    "bed_height_mm": 180.0,
+    "screw_hole_diameter_mm": 0,
+    "screw_hole_label_positions": [],
+    "bed_label_x_max": 30,
+    "bed_label_y_max": 18
+  },
+  {
+    "key": "genmitsu_4030_pro",
+    "name": "SainSmart Genmitsu 4030 PRO",
+    "bed_width_mm": 400.0,
+    "bed_height_mm": 300.0,
+    "screw_hole_diameter_mm": 0,
+    "screw_hole_label_positions": [],
+    "bed_label_x_max": 40,
+    "bed_label_y_max": 30
+  },
+  {
+    "key": "foxalien_vasto",
+    "name": "Foxalien Vasto / Reizer",
+    "bed_width_mm": 410.0,
+    "bed_height_mm": 400.0,
+    "screw_hole_diameter_mm": 0,
+    "screw_hole_label_positions": [],
+    "bed_label_x_max": 41,
+    "bed_label_y_max": 40
+  },
+  {
+    "key": "shapeoko_3_standard",
+    "name": "Shapeoko 3 Standard",
+    "bed_width_mm": 425.0,
+    "bed_height_mm": 425.0,
+    "screw_hole_diameter_mm": 0,
+    "screw_hole_label_positions": [],
+    "bed_label_x_max": 42,
+    "bed_label_y_max": 42
+  },
+  {
+    "key": "shapeoko_5_pro_2x2",
+    "name": "Shapeoko 5 Pro 2x2",
+    "bed_width_mm": 610.0,
+    "bed_height_mm": 610.0,
+    "screw_hole_diameter_mm": 0,
+    "screw_hole_label_positions": [],
+    "bed_label_x_max": 61,
+    "bed_label_y_max": 61
+  },
+  {
+    "key": "x_carve_1000",
+    "name": "X-Carve 1000",
+    "bed_width_mm": 750.0,
+    "bed_height_mm": 750.0,
+    "screw_hole_diameter_mm": 0,
+    "screw_hole_label_positions": [],
+    "bed_label_x_max": 75,
+    "bed_label_y_max": 75
+  },
+  {
+    "key": "onefinity_woodworker",
+    "name": "Onefinity Woodworker",
+    "bed_width_mm": 813.0,
+    "bed_height_mm": 813.0,
+    "screw_hole_diameter_mm": 0,
+    "screw_hole_label_positions": [],
+    "bed_label_x_max": 81,
+    "bed_label_y_max": 81
+  },
+  {
+    "key": "onefinity_journeyman",
+    "name": "Onefinity Journeyman",
+    "bed_width_mm": 813.0,
+    "bed_height_mm": 1219.0,
+    "screw_hole_diameter_mm": 0,
+    "screw_hole_label_positions": [],
+    "bed_label_x_max": 81,
+    "bed_label_y_max": 121
+  },
+  {
+    "key": "openbuilds_lead_1010",
+    "name": "OpenBuilds LEAD 1010",
+    "bed_width_mm": 1000.0,
+    "bed_height_mm": 1000.0,
+    "screw_hole_diameter_mm": 0,
+    "screw_hole_label_positions": [],
+    "bed_label_x_max": 100,
+    "bed_label_y_max": 100
+  }
+]

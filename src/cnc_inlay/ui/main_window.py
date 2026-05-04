@@ -622,10 +622,17 @@ class MainWindow(QMainWindow):
         settings_menu.addSeparator()
         my_bits_act = QAction("My Bits…", self)
         my_bits_act.setStatusTip(
-            "Pick the endmills, ball-noses, and V-bits you own from the catalog"
+            "Pick the endmills, V-bits, and surfacing bits you own from the catalog"
         )
         my_bits_act.triggered.connect(self._on_open_my_bits)
         settings_menu.addAction(my_bits_act)
+
+        my_cnc_act = QAction("My CNC Device…", self)
+        my_cnc_act.setStatusTip(
+            "Pick the CNC machine you're cutting on (drives the bed envelope)"
+        )
+        my_cnc_act.triggered.connect(self._on_open_my_cnc_device)
+        settings_menu.addAction(my_cnc_act)
         surface_act = QAction("Surface plug backing…", self)
         surface_act.setStatusTip(
             "Plane the back of an assembled inlay flush, exposing the inlay"
@@ -1618,6 +1625,40 @@ class MainWindow(QMainWindow):
             self._set_status(f"Saved surfacing G-code to {Path(path).name}")
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
+
+    def _on_open_my_cnc_device(self) -> None:
+        """Settings → My CNC Device — pick the machine the app should
+        target. On save, re-apply the active machine's bed envelope to
+        every open canvas across all open windows so the change is
+        immediate."""
+        from cnc_inlay.ui.cnc_device_dialog import MyCNCDeviceDialog
+        dlg = MyCNCDeviceDialog(self)
+        dlg.machineChanged.connect(self._reapply_active_cnc_machine)
+        dlg.exec()
+
+    def _reapply_active_cnc_machine(self) -> None:
+        """Reload the active CNC machine and push its bed envelope into
+        the canvas modules (which expose mutable BED_WIDTH_MM /
+        BED_HEIGHT_MM constants for back-compat). Every open window
+        then re-renders its bed grid and screw-hole pattern."""
+        from cnc_inlay.presets.cnc_machines import get_active_machine
+        from cnc_inlay.ui.canvas import apply_active_machine
+        from cnc_inlay.ui.canvas3d import apply_active_machine_3d
+        machine = get_active_machine()
+        apply_active_machine(machine)
+        apply_active_machine_3d(machine)
+        # Force every open window's canvases to redraw the bed.
+        for win in MainWindow._open_windows:
+            try:
+                for c in win._all_2d_canvases():
+                    c.viewport().update()
+                for c in win._all_3d_canvases():
+                    c._refresh_geometry()
+                    c._draw_bed()
+                    c.update()
+            except Exception:
+                pass
+        self._set_status(f"CNC machine: {machine.name}")
 
     def _on_open_my_bits(self) -> None:
         """Settings → My Bits — pick owned bits from the catalog. After
