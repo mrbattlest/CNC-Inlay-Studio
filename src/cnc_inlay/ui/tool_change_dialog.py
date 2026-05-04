@@ -117,11 +117,23 @@ class ToolChangeDialog(QDialog):
 
     def show_for_bit(self, bit_name: str) -> None:
         """Update the header for the bit about to be installed and pop the
-        dialog into view (raised to top of the window stack)."""
+        dialog into view. Anchored to the parent window's TOP-RIGHT corner
+        so the bottom-panel jog controls (which the operator needs to
+        actually use to re-zero Z) remain visible and clickable. Focus is
+        deliberately NOT activated — keyboard + mouse stay with the main
+        window so jog buttons respond immediately without an extra click
+        to refocus."""
         self._header.setText(f"Install: {bit_name}")
+        # Anchor against the parent's top-right corner if we have one.
+        parent = self.parentWidget()
+        if parent is not None:
+            self.adjustSize()
+            margin = 24
+            target_x = parent.x() + parent.width() - self.width() - margin
+            target_y = parent.y() + margin + 40  # below the menu bar
+            self.move(max(0, target_x), max(0, target_y))
         self.show()
         self.raise_()
-        self.activateWindow()
 
     def _on_resume_clicked(self) -> None:
         self.resumeRequested.emit()
