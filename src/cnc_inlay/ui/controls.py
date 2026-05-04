@@ -1,6 +1,8 @@
 """Sidebar parameter widgets (file, design, material, bits, speeds, inlay)."""
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QColor, QPainter, QIcon
 from PySide6.QtWidgets import (
@@ -428,6 +430,35 @@ def _help_inline_label(html: str) -> QLabel:
     lbl.setTextFormat(Qt.RichText)
     lbl.setStyleSheet("font-size: 10px;")
     return lbl
+
+
+_BIT_META_SUFFIX_RE = re.compile(
+    r" \([^()]*(?:shank|flute|insert|solid|carbide)[^()]*\)$",
+    re.IGNORECASE,
+)
+
+
+def _short_bit_label(name: str, max_len: int = 22) -> str:
+    """Compress a bit's catalog name into something that fits a Speeds
+    tab while staying unambiguous (so a tab can't read '3.2 mm' when
+    the actual bit is '1/8" (3.175 mm) endmill'). Strategy:
+
+      1. Iteratively strip trailing METADATA parentheticals — those
+         describing shank / flute / insert / solid / carbide. Crucially
+         do NOT strip parentheticals that contain the diameter, since
+         that's the key disambiguator (e.g. '(3.175 mm)').
+      2. If the result is still too long, hard-truncate with ellipsis.
+         Full bit name stays on the tab's tooltip.
+    """
+    label = name
+    while True:
+        new_label = _BIT_META_SUFFIX_RE.sub("", label)
+        if new_label == label:
+            break
+        label = new_label.rstrip()
+    if len(label) > max_len:
+        label = label[: max_len - 1].rstrip() + "…"
+    return label
 
 
 def _color_swatch_icon(color: QColor, size: int = 14) -> QIcon:
@@ -1422,11 +1453,14 @@ class ControlsPanel(QWidget):
                 if bit.name in self._pending_bit_overrides:
                     tab.apply_override(self._pending_bit_overrides.pop(bit.name))
             # Ensure the tab sits at position i with the right title + icon.
-            # Short tab text (just the diameter) keeps the tab bar narrow;
-            # the full bit name is on the tooltip.
+            # Show the bit's actual name (truncated if very long) so the
+            # tab unambiguously matches the bit the user checked in My
+            # Bits. Earlier code used "{diameter:.1f} mm" which rounded
+            # 3.175 (1/8") to "3.2" and confused users running a 3.0 mm
+            # endmill alongside a 1/8" endmill.
             current_idx = self._speeds_tabs.indexOf(tab)
-            label = f"{bit.diameter_mm:.1f} mm"
-            tooltip = f"{bit.name} (Ø {bit.diameter_mm:.2f} mm)"
+            label = _short_bit_label(bit.name)
+            tooltip = f"{bit.name} (Ø {bit.diameter_mm:.3f} mm)"
             icon = _color_swatch_icon(color)
             if current_idx == -1:
                 idx_now = self._speeds_tabs.insertTab(i, tab, icon, label)
@@ -1734,7 +1768,7 @@ class ControlsPanel(QWidget):
         elif warnings:
             self.recommendation_button.setText(
                 f"⚠ {warnings} warning{'s' if warnings != 1 else ''} "
-                f"and recommendations — click for details"
+                f"and recommendations"
             )
             self.recommendation_button.setEnabled(True)
             # Amber-tinted button so warnings pull the eye.
@@ -1744,9 +1778,7 @@ class ControlsPanel(QWidget):
                 "QPushButton:hover { background: rgba(245, 166, 35, 30); }"
             )
         else:
-            self.recommendation_button.setText(
-                "ℹ Recommendations available — click for details"
-            )
+            self.recommendation_button.setText("ℹ Recommendations available")
             self.recommendation_button.setEnabled(True)
             self.recommendation_button.setStyleSheet(
                 "QPushButton { text-align: left; padding: 6px 10px; }"
