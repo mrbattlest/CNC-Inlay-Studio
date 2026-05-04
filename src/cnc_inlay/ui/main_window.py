@@ -618,6 +618,17 @@ class MainWindow(QMainWindow):
         prefs_act.triggered.connect(self._on_open_preferences)
         settings_menu.addAction(prefs_act)
 
+        # Tools menu — separate from Settings because these are
+        # job-shaped actions (run a surfacing pass, etc.) rather than
+        # one-time configuration.
+        tools_menu = menu.addMenu("&Tools")
+        surface_act = QAction("Surface plug backing…", self)
+        surface_act.setStatusTip(
+            "Plane the back of an assembled inlay flush, exposing the inlay"
+        )
+        surface_act.triggered.connect(self._on_open_surfacing_dialog)
+        tools_menu.addAction(surface_act)
+
         # Help menu — About + Check for Updates. macOS auto-promotes any
         # action whose menuRole is AboutRole into the application menu (the
         # bold leftmost menu) AND keeps it visible under Help, which is the
@@ -1357,6 +1368,87 @@ class MainWindow(QMainWindow):
     def _on_open_preferences(self) -> None:
         dlg = PreferencesDialog(self)
         dlg.exec()
+
+    def _on_open_surfacing_dialog(self) -> None:
+        """Tools → Surface plug backing… — open the surfacing planner."""
+        from cnc_inlay.ui.surfacing_dialog import SurfacingDialog
+        # Available surfacing bits = anything in My Bits with type "surfacing".
+        surfacing_bits = [b for b in self._bits if b.type == "surfacing"]
+        params = self._controls.current_params()
+        # Default panel dimensions = the pocket stock dimensions, since
+        # the assembled panel is the same physical piece. Fall back to
+        # the design size if no stock dimensions are set.
+        panel_w = params.pocket_stock_width_mm
+        panel_h = params.pocket_stock_height_mm
+        if panel_w <= 0 and self._design is not None:
+            panel_w = self._design.width_mm
+        if panel_h <= 0 and self._design is not None:
+            panel_h = self._design.height_mm
+        dlg = SurfacingDialog(
+            self,
+            surfacing_bits=surfacing_bits,
+            default_panel_width_mm=panel_w or 200.0,
+            default_panel_height_mm=panel_h or 100.0,
+            default_glue_gap_mm=params.glue_gap_mm,
+            default_pocket_depth_mm=params.pocket_depth_mm,
+            default_plug_thickness_mm=params.plug_thickness_mm,
+            machine_connected=self._controller.is_connected,
+        )
+        dlg.runRequested.connect(self._on_run_surfacing)
+        dlg.saveRequested.connect(self._on_save_surfacing_gcode)
+        dlg.exec()
+
+    def _on_run_surfacing(self, plan) -> None:
+        """User clicked Run on Machine in the surfacing dialog. Confirm
+        once more, then stream the surfacing G-code."""
+        if not self._controller.is_connected:
+            QMessageBox.information(
+                self, "Not connected", "Connect to the CNC machine first."
+            )
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Run surfacing",
+            f"<b>Start surfacing now?</b><br><br>"
+            f"<b>Bit:</b> {plan.bit_name}<br>"
+            f"<b>Total depth:</b> {plan.total_depth_mm:.2f} mm<br>"
+            f"<b>Cut length:</b> {plan.cut_length_mm:,.0f} mm<br><br>"
+            "<b style='color:#e0524a;'>Final checks:</b><br>"
+            "• Glued panel is clamped <b>face-down</b> on the bed<br>"
+            "• Surfacing bit is installed and tightened<br>"
+            "• Z-zero is set on the <b>highest point</b> of the plug backing<br>"
+            "• Dust shroud is removed or set high<br>"
+            "• You can reach the e-stop<br><br>"
+            "Click Yes to start streaming.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        self._streaming_side = "surfacing"
+        self._streaming_start_line = 0
+        self._streaming_preamble_len = 0
+        self._controller.run_program(plan.gcode, start_line=0, checkpoint=None)
+        self._set_status(
+            f"Surfacing in progress — removing {plan.total_depth_mm:.2f} mm with {plan.bit_name}…"
+        )
+
+    def _on_save_surfacing_gcode(self, plan) -> None:
+        """Save the surfacing G-code to a file the user can open in any sender."""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save surfacing G-code",
+            f"surfacing_{plan.bit_diameter_mm:.0f}mm.gcode",
+            "G-code (*.gcode);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            from pathlib import Path
+            Path(path).write_text(plan.gcode)
+            self._set_status(f"Saved surfacing G-code to {Path(path).name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save failed", str(exc))
 
     def _on_open_my_bits(self) -> None:
         """Settings → My Bits — pick owned bits from the catalog. After

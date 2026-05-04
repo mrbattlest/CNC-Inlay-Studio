@@ -58,5 +58,10 @@
 
   { "name": "0.1 mm tip 30° engraving (1/8\" shank)", "type": "engraving", "angle_deg": 30, "shank_mm": 3.175, "diameter_mm": 0.1, "max_rpm": 18000, "flutes": 1 },
   { "name": "0.2 mm tip 60° engraving (1/8\" shank)", "type": "engraving", "angle_deg": 60, "shank_mm": 3.175, "diameter_mm": 0.2, "max_rpm": 18000, "flutes": 1 },
-  { "name": "0.3 mm tip 60° engraving (1/8\" shank)", "type": "engraving", "angle_deg": 60, "shank_mm": 3.175, "diameter_mm": 0.3, "max_rpm": 16000, "flutes": 1 }
+  { "name": "0.3 mm tip 60° engraving (1/8\" shank)", "type": "engraving", "angle_deg": 60, "shank_mm": 3.175, "diameter_mm": 0.3, "max_rpm": 16000, "flutes": 1 },
+
+  { "name": "Yonico 14971 — 19 mm (3/4\") spoilboard surfacer (1/4\" shank, 3 inserts)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 19.0, "max_rpm": 12000, "flutes": 3 },
+  { "name": "Yonico 14975 — 25 mm (1\") spoilboard surfacer (1/4\" shank, 3 inserts)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 25.0, "max_rpm": 12000, "flutes": 3 },
+  { "name": "Genmitsu FMB-16 — 22 mm spoilboard surfacer (1/4\" shank, insert)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 22.0, "max_rpm": 12000, "flutes": 1 },
+  { "name": "SpeTool 22 mm spoilboard surfacer (1/4\" shank, 4-flute solid carbide)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 22.0, "max_rpm": 12000, "flutes": 4 }
 ]

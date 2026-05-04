@@ -250,6 +250,21 @@ class StockFitReport:
 
 
 @dataclass
+class SurfacingPlan:
+    """Generated surfacing toolpath + G-code for removing the plug backing
+    after glue-up. Computed on demand by ``compute_surfacing_plan`` once
+    the user has chosen a surfacing bit + depth. Lives outside the
+    main pocket/plug pipeline because surfacing is a post-glue-up step
+    that the user runs separately, after assembling the inlay."""
+    chains: list[Chain] = field(default_factory=list)
+    gcode: str = ""
+    cut_length_mm: float = 0.0
+    total_depth_mm: float = 0.0
+    bit_name: str = ""
+    bit_diameter_mm: float = 0.0
+
+
+@dataclass
 class PipelineResult:
     pocket: Side
     plug: Side
@@ -1024,6 +1039,96 @@ def run_pipeline(
         recommendation=recommendation, fragility=fragility,
         stock_fit=stock_fit,
         finished_geometry=finished_geometry,
+    )
+
+
+def compute_surfacing_plan(
+    bit: Bit,
+    *,
+    stock_width_mm: float,
+    stock_height_mm: float,
+    pocket_depth_mm: float,
+    glue_gap_mm: float,
+    plug_thickness_mm: float,
+    feed_mm_min: float | None = None,
+    plunge_mm_min: float | None = None,
+    rpm: int | None = None,
+    pass_depth_mm: float | None = None,
+    safe_z_mm: float = 5.0,
+    extra_depth_mm: float | None = None,
+) -> SurfacingPlan:
+    """Generate a SurfacingPlan: raster zig-zag G-code to plane the back
+    of an assembled inlay, exposing the inlay flush with the pocket-side
+    wood.
+
+    Auto-derives the depth to remove from glue-gap + safety margin if
+    ``extra_depth_mm`` isn't supplied. The plug stands proud of the
+    pocket wood by ``glue_gap_mm`` after assembly; surfacing removes
+    that plus a small safety margin (default 0.2 mm) to absorb Z-zero
+    variation across the panel.
+
+    Stock dimensions are the assembled-inlay panel's width and height.
+    For a typical workflow these match the pocket stock dimensions.
+    """
+    from cnc_inlay.gcode.emitter import Section, emit_gcode
+    from cnc_inlay.toolpath.surfacing import (
+        SurfacingParams, compute_surfacing_chains, total_cut_length_mm,
+    )
+
+    if extra_depth_mm is None:
+        extra_depth_mm = 0.2  # Z-zero variation buffer; user can override.
+    total_depth = max(0.05, glue_gap_mm + extra_depth_mm)
+
+    # Conservative defaults for a hobby-CNC surfacing bit on a 500 W
+    # spindle. Caller can override per-bit speeds.
+    sp = SurfacingParams(
+        stock_width_mm=stock_width_mm,
+        stock_height_mm=stock_height_mm,
+        bit=bit,
+        total_depth_mm=total_depth,
+        feed_mm_min=feed_mm_min if feed_mm_min is not None else 1000.0,
+        plunge_mm_min=plunge_mm_min if plunge_mm_min is not None else 300.0,
+        rpm=rpm if rpm is not None else min(10000, bit.max_rpm),
+        pass_depth_mm=pass_depth_mm if pass_depth_mm is not None else 0.4,
+        safe_z_mm=safe_z_mm,
+    )
+    chains = compute_surfacing_chains(sp)
+    if not chains:
+        return SurfacingPlan(
+            bit_name=bit.name,
+            bit_diameter_mm=bit.diameter_mm,
+            total_depth_mm=total_depth,
+        )
+
+    # Reuse the inlay G-code emitter so safety machinery (M3+G4 dwell,
+    # safe-Z lifts, end-of-section M5) is identical to inlay cuts.
+    surfacing_material = Material(
+        name="Surfacing pass",
+        feed_mm_min=sp.feed_mm_min,
+        plunge_mm_min=sp.plunge_mm_min,
+        rpm=sp.rpm,
+        max_doc_mm=sp.pass_depth_mm,
+    )
+    section = Section(
+        bit=bit,
+        material=surfacing_material,
+        chains=chains,
+        label=f"Surfacing — remove {total_depth:.2f} mm to expose inlay",
+    )
+    params = InlayParams(safe_z_mm=safe_z_mm)
+    gcode = emit_gcode(
+        [section],
+        title=f"CNC Inlay Studio — surfacing ({bit.name})",
+        params=params,
+        is_plug=False,
+    )
+    return SurfacingPlan(
+        chains=chains,
+        gcode=gcode,
+        cut_length_mm=total_cut_length_mm(chains),
+        total_depth_mm=total_depth,
+        bit_name=bit.name,
+        bit_diameter_mm=bit.diameter_mm,
     )
 
 
