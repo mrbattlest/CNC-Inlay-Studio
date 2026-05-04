@@ -192,6 +192,34 @@ HELP_TEXTS: dict[str, tuple[str, str]] = {
         "This setting is <b>Z only</b>. For XY clearance (the gap at the "
         "plug walls), see <b>XY tolerance</b> below.",
     ),
+    "vbit_wall_finish": (
+        "Wall finish — V-bit (optional)",
+        "Pick a V-bit here to enable <b>V-bit inlay mode</b>. After the "
+        "flat endmills clear the pocket / plug, the V-bit makes a "
+        "perimeter pass at full pocket depth, carving angled walls "
+        "instead of vertical ones."
+        "<br><br>"
+        "<b>Why use it:</b> the angled walls of the pocket and the "
+        "(already-flipped) plug wedge together when assembled, "
+        "<b>eliminating the visible glue line</b>. Best for fine-detail "
+        "designs (text, sharp corners) where bit-radius limits matter."
+        "<br><br>"
+        "<b>Workflow stays the same</b> as flat-endmill inlay — you "
+        "still cut a mirrored plug and flip it to glue. The V-bit "
+        "handles the angle automatically."
+        "<br><br>"
+        "<b>What changes when V-bit is selected:</b>"
+        "<ul>"
+        "<li>A V-bit perimeter pass is added to BOTH pocket and plug</li>"
+        "<li><b>XY tolerance is auto-zeroed</b> — angled walls "
+        "self-align, so any XY clearance would cause the plug to seat "
+        "too deep (XY-shrink ÷ tan(half-angle) of unwanted Z drop)</li>"
+        "<li>The V-bit needs its own speeds tab (sharp tip is fragile, "
+        "use slower feed than flat endmill)</li>"
+        "</ul>"
+        "Set to <b>(none)</b> to keep the classic flat-walled inlay "
+        "behaviour."
+    ),
     "xy_tolerance": (
         "XY tolerance (per-side)",
         "Per-side shrinkage of the plug in X and Y so it fits the pocket "
@@ -915,22 +943,27 @@ class ControlsPanel(QWidget):
         bf.setHorizontalSpacing(6)
         bf.setVerticalSpacing(4)
 
-        # V-bit dropdown is only shown if the bit library has any V-bits.
-        # The current straight-wall pocket-inlay technique doesn't use one;
-        # this is wired up for the future V-carve technique.
+        # Wall-finish V-bit dropdown. (none) by default — the legacy
+        # straight-walled inlay path. Picking a V-bit here switches the
+        # pipeline into V-bit inlay mode: a perimeter pass at the chosen
+        # angle is appended to BOTH pocket and plug, carving angled walls
+        # that wedge tight when the (already-flipped) plug is pressed in.
+        # xy_tolerance is auto-zeroed when a V-bit is picked because
+        # angled walls self-align — XY clearance would cause the plug to
+        # seat too deep.
         vbits_in_library = [b for b in bits if b.type == "vbit"]
         self.vbit_combo = QComboBox()
-        self.vbit_combo.setMaximumWidth(180)
-        if vbits_in_library:
-            for b in vbits_in_library:
-                self.vbit_combo.addItem(b.name, b)
-            self.vbit_combo.currentIndexChanged.connect(self._on_param_change)
-            self.vbit_combo.currentIndexChanged.connect(self._refresh_bit_specs)
-            bf.addRow("V-bit:", _combo_row(self.vbit_combo, ""))
-            self.vbit_specs_label = _hint("")
-            bf.addRow(self.vbit_specs_label)
-        else:
-            self.vbit_specs_label = _hint("")
+        self.vbit_combo.setMaximumWidth(220)
+        self.vbit_combo.addItem("(none — flat-walled inlay)", None)
+        for b in vbits_in_library:
+            self.vbit_combo.addItem(b.name, b)
+        self.vbit_combo.currentIndexChanged.connect(self._on_param_change)
+        self.vbit_combo.currentIndexChanged.connect(self._refresh_bit_specs)
+        self.vbit_combo.currentIndexChanged.connect(self._on_vbit_selection_changed)
+        self.vbit_combo.currentIndexChanged.connect(self._refresh_speeds_tabs)
+        bf.addRow("Wall finish:", _wrap_with_help(self.vbit_combo, "vbit_wall_finish", self))
+        self.vbit_specs_label = _hint("")
+        bf.addRow(self.vbit_specs_label)
 
         self.endmill_combo = QComboBox()
         self.endmill_combo.setMaximumWidth(180)
@@ -1100,6 +1133,40 @@ class ControlsPanel(QWidget):
             return
         self.parametersChanged.emit()
 
+    def _on_vbit_selection_changed(self) -> None:
+        """V-bit dropdown changed. When a V-bit is now active, auto-zero
+        the XY-tolerance spinbox and disable it (with a tooltip
+        explaining why). When the user goes back to (none), re-enable
+        it. Keeping a non-zero XY tolerance with a V-bit would cause
+        the plug to seat too deep — the angled walls self-align."""
+        vbit = self.vbit_combo.currentData()
+        active = vbit is not None and getattr(vbit, "type", "") == "vbit"
+        if active:
+            # Save the current XY-tol value the first time we disable so
+            # we can restore it when the user picks (none) again.
+            if not hasattr(self, "_xy_tol_pre_vbit"):
+                self._xy_tol_pre_vbit = self.xy_tol_spin.value()
+            self._suppress_signals = True
+            self.xy_tol_spin.setValue(0.0)
+            self._suppress_signals = False
+            self.xy_tol_spin.setEnabled(False)
+            self.xy_tol_spin.setToolTip(
+                "Auto-zeroed for V-bit inlay — angled walls self-align "
+                "and any XY clearance would cause the plug to seat too "
+                "deep. Switch the Wall finish back to (none) to edit "
+                "this value."
+            )
+        else:
+            self.xy_tol_spin.setEnabled(True)
+            self.xy_tol_spin.setToolTip("")
+            # Restore the user's pre-V-bit value if we have one stashed.
+            stashed = getattr(self, "_xy_tol_pre_vbit", None)
+            if stashed is not None:
+                self._suppress_signals = True
+                self.xy_tol_spin.setValue(stashed)
+                self._suppress_signals = False
+                del self._xy_tol_pre_vbit
+
     # ------------------------------------------------------------- units
 
     def set_units(self, units: Units) -> None:
@@ -1257,6 +1324,12 @@ class ControlsPanel(QWidget):
                 )
                 if bit is not None:
                     seen.setdefault(name, bit)
+        # Wall-finish V-bit, if active. Gets its own speeds tab (sharp
+        # tip needs its own RPM/feed/plunge — typically slower than a
+        # flat endmill).
+        vbit = self.vbit_combo.currentData()
+        if vbit is not None and getattr(vbit, "type", "") == "vbit":
+            seen.setdefault(vbit.name, vbit)
         return sorted(seen.values(), key=lambda b: -b.diameter_mm)
 
     def _bit_default_material(self, bit: Bit) -> Material | None:
@@ -1555,10 +1628,12 @@ class ControlsPanel(QWidget):
             self.endmill_combo.setCurrentIndex(target_idx)
         self.endmill_combo.blockSignals(False)
 
-        # Rebuild v-bit combo (if any v-bits in library).
+        # Rebuild v-bit combo. Always keep "(none)" as the first entry so
+        # the user can opt out of V-bit inlay regardless of what's owned.
         vbits = [b for b in bits if b.type == "vbit"]
         self.vbit_combo.blockSignals(True)
         self.vbit_combo.clear()
+        self.vbit_combo.addItem("(none — flat-walled inlay)", None)
         for b in vbits:
             self.vbit_combo.addItem(b.name, b)
         if prev_vbit_name:
@@ -1573,6 +1648,9 @@ class ControlsPanel(QWidget):
         self._refresh_bit_specs()
         self._refresh_roughing_options()
         self._refresh_speeds_tabs()
+        # Update XY-tolerance enable state (V-bit may have been removed
+        # from the library and the previously-selected V-bit is now gone).
+        self._on_vbit_selection_changed()
         self._on_param_change()
 
     def set_recommendation(self, text_or_lines) -> None:

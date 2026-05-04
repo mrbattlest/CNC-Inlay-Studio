@@ -720,6 +720,7 @@ def _generate_pocket_side(
     params: InlayParams,
     title_prefix: str,
     bit_library: list[Bit] | None = None,
+    vbit: Bit | None = None,
     progress_cb: Callable[[float, str], None] | None = None,
     progress_lo: float = 0.0,
     progress_hi: float = 100.0,
@@ -736,6 +737,19 @@ def _generate_pocket_side(
         progress_lo=progress_lo,
         progress_hi=progress_hi,
     )
+
+    # V-bit wall-finish pass — runs LAST so it bevels the perimeter that
+    # the flat endmills just left as a vertical wall.
+    if vbit is not None and vbit.type == "vbit":
+        from cnc_inlay.toolpath.vbit_walls import compute_vbit_wall_chains
+        vchains = compute_vbit_wall_chains(
+            centered_geom,
+            angle_deg=vbit.angle_deg,
+            depth_mm=params.pocket_depth_mm,
+            pass_depth_mm=params.pass_depth_mm,
+        )
+        if vchains:
+            bit_chains = list(bit_chains) + [(vbit, vchains)]
 
     if params.origin == Origin.BOTTOM_LEFT:
         dx = design.width_mm / 2
@@ -759,6 +773,7 @@ def _generate_plug_side(
     params: InlayParams,
     title_prefix: str,
     bit_library: list[Bit] | None = None,
+    vbit: Bit | None = None,
     progress_cb: Callable[[float, str], None] | None = None,
     progress_lo: float = 0.0,
     progress_hi: float = 100.0,
@@ -767,6 +782,9 @@ def _generate_plug_side(
     # XY tolerance: shrink the plug feature by xy_tolerance_mm per side so
     # the plug fits the pocket with a glue layer at every wall. The pocket
     # still gets cut to the design's nominal size; only the plug shrinks.
+    # NOTE: when a V-bit is active, xy_tolerance is auto-zeroed by the UI
+    # because angled-wall geometry self-aligns; any XY shrink would cause
+    # the plug to seat too deep (XY shrink ÷ tan(half-angle) of Z drop).
     if params.xy_tolerance_mm > 0:
         try:
             shrunk = mirrored.buffer(-params.xy_tolerance_mm).buffer(0)
@@ -790,15 +808,32 @@ def _generate_plug_side(
     sequence = _resolve_bit_sequence(
         endmill, params.plug_roughing_bits, bit_library
     )
+    plug_depth = params.pocket_depth_mm + params.glue_gap_mm
     bit_chains = _rest_machine_chains(
         complement, sequence,
-        depth_mm=params.pocket_depth_mm + params.glue_gap_mm,
+        depth_mm=plug_depth,
         step_over_frac=params.pocket_step_over_frac,
         pass_depth_mm=params.pass_depth_mm,
         progress_cb=progress_cb,
         progress_lo=progress_lo,
         progress_hi=progress_hi,
     )
+
+    # V-bit wall-finish pass on the plug side — same V-bit, same angle as
+    # the pocket. Operates on the MIRRORED design polygon (the plug
+    # feature itself, not the surrounding-waste complement). After the
+    # operator flips the plug stock and presses it into the pocket,
+    # these angled walls mate with the pocket's V-walls and wedge tight.
+    if vbit is not None and vbit.type == "vbit":
+        from cnc_inlay.toolpath.vbit_walls import compute_vbit_wall_chains
+        vchains = compute_vbit_wall_chains(
+            mirrored,
+            angle_deg=vbit.angle_deg,
+            depth_mm=plug_depth,
+            pass_depth_mm=params.pass_depth_mm,
+        )
+        if vchains:
+            bit_chains = list(bit_chains) + [(vbit, vchains)]
 
     if params.origin == Origin.BOTTOM_LEFT:
         dx = design.width_mm / 2
@@ -902,12 +937,14 @@ def run_pipeline(
     pocket = _generate_pocket_side(
         job.design, centered, job.endmill, job.pocket_material, job.params, title,
         bit_library=bit_library,
+        vbit=job.vbit,
         progress_cb=progress_cb, progress_lo=2.0, progress_hi=48.0,
     )
     _report(48, "Generating plug toolpaths…")
     plug = _generate_plug_side(
         job.design, centered, job.endmill, job.plug_material, job.params, title,
         bit_library=bit_library,
+        vbit=job.vbit,
         progress_cb=progress_cb, progress_lo=48.0, progress_hi=94.0,
     )
 

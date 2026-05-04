@@ -185,4 +185,10 @@ class Job:
     pocket_material: Material
     plug_material: Material
     params: InlayParams = field(default_factory=InlayParams)
-    vbit: Bit | None = None                  # optional — only used by V-carve technique (deferred)
+    # Optional wall-finish V-bit. When present, the pipeline appends a
+    # V-bit perimeter pass to BOTH pocket and plug, carving angled walls
+    # that wedge together for a glue-line-free seam after the existing
+    # flip-and-mirror plug workflow. xy_tolerance is auto-zeroed when a
+    # V-bit is in use because angled-wall geometry self-aligns and any
+    # XY clearance would cause the plug to seat too deep.
+    vbit: Bit | None = None
