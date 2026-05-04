@@ -1640,22 +1640,36 @@ class MainWindow(QMainWindow):
         """Reload the active CNC machine and push its bed envelope into
         the canvas modules (which expose mutable BED_WIDTH_MM /
         BED_HEIGHT_MM constants for back-compat). Every open window
-        then re-renders its bed grid and screw-hole pattern."""
+        then re-renders its bed grid, re-fits the 2D view, and resizes
+        the 3D GLGridItem so the new bed envelope is visible."""
         from cnc_inlay.presets.cnc_machines import get_active_machine
-        from cnc_inlay.ui.canvas import apply_active_machine
+        from cnc_inlay.ui.canvas import (
+            BED_HEIGHT_MM, BED_WIDTH_MM, apply_active_machine,
+        )
         from cnc_inlay.ui.canvas3d import apply_active_machine_3d
+        import pyqtgraph as pg
         machine = get_active_machine()
         apply_active_machine(machine)
         apply_active_machine_3d(machine)
-        # Force every open window's canvases to redraw the bed.
         for win in MainWindow._open_windows:
             try:
+                # 2D canvases: redraw the painted background AND re-fit
+                # the view so the newly-larger (or smaller) bed actually
+                # fills the visible area instead of staying scrolled-in.
                 for c in win._all_2d_canvases():
+                    c._fit()
                     c.viewport().update()
+                # 3D canvases: GLGridItem and bed envelope are separate
+                # GL objects, so we have to resize the grid AND re-emit
+                # the bed wireframe + screw circles + axis labels.
                 for c in win._all_3d_canvases():
-                    c._refresh_geometry()
+                    if c._grid is not None:
+                        c._grid.setSize(x=BED_WIDTH_MM, y=BED_HEIGHT_MM)
+                        c._grid.setSpacing(10, 10)
                     c._draw_bed()
-                    c.update()
+                    # Camera distance was sized for the old bed — pull
+                    # back to frame the new envelope.
+                    c._reset_camera()
             except Exception:
                 pass
         self._set_status(f"CNC machine: {machine.name}")
