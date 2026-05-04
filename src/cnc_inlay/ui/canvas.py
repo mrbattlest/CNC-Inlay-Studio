@@ -259,16 +259,14 @@ class PreviewCanvas(QGraphicsView):
     def set_pocket_clear_by_bit(
         self, bit_chains: list[tuple[object, list[Chain], str, float]]
     ) -> None:
-        """Render a multi-bit clearing pass with one colour per bit + legend.
-
-        ``bit_chains`` is a list of (Bit, chains, role, duration_s) tuples in
-        cut order. Single-bit programs use ``set_pocket_clear`` for the
-        original visual style; this method handles actual multi-bit runs.
-        """
-        # Fall back to legacy single-colour rendering for single-bit programs.
-        if len(bit_chains) <= 1:
-            chains = bit_chains[0][1] if bit_chains else []
-            self.set_pocket_clear(chains)
+        """Render the chains with per-bit colours AND show the
+        "Tool sequence" legend (bit name, swatch, time estimate)
+        anchored to the bottom-right. The legend shows for any
+        non-empty bit_chains list — single-bit runs (Pocket / Plug /
+        Surfacing) included — so the user can see what's about to
+        cut without opening a separate panel."""
+        if not bit_chains:
+            self.set_pocket_clear([])
             return
         # Wipe existing items and accumulated chains, then draw each bit's
         # chains in its own palette colour.

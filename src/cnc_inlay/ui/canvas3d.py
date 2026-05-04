@@ -214,12 +214,16 @@ class Canvas3D(gl.GLViewWidget):
     def set_pocket_clear_by_bit(
         self, bit_chains: list[tuple[object, list[Chain], str, float]]
     ) -> None:
-        """Multi-bit version: each bit's chains drawn in its own colour, plus
-        the same 'Tool sequence' legend as the 2D top-down view (anchored to
-        the bottom-right corner)."""
-        if len(bit_chains) <= 1:
-            chains = bit_chains[0][1] if bit_chains else []
-            self.set_pocket_clear(chains)
+        """Render the chains with per-bit colours AND show the
+        "Tool sequence" legend (bit name, colour swatch, estimated
+        time) anchored to the bottom-right of the canvas. The legend
+        shows for any non-empty bit_chains list — including single-bit
+        runs (Pocket / Plug / Surfacing) so the user can see the
+        tool name and time estimate without opening the speeds panel.
+        For an empty list, falls back to clearing the canvas via
+        set_pocket_clear (which hides the legend)."""
+        if not bit_chains:
+            self.set_pocket_clear([])
             return
         from cnc_inlay.ui.canvas import build_bit_legend_html
         from cnc_inlay.ui.theme import color_for_bit_index
