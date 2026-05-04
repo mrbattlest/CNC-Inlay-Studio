@@ -93,29 +93,48 @@ def compute_surfacing_chains(params: SurfacingParams) -> list[Chain]:
     height = y_max - y_min
     cut_along_x = width >= height
 
-    chains: list[Chain] = []
+    # Build a SINGLE connected zig-zag chain instead of one chain per
+    # row. The bit cuts to row N's end, then steps over (at depth)
+    # straight into row N+1's start, alternating direction each row.
+    # This eliminates the lift+rapid+plunge that would otherwise
+    # happen between every adjacent row — which on a 100×100 mm panel
+    # at 70% step-over with a 19 mm bit is ~7 redundant lift cycles
+    # per cut, ~20 mm of wasted Z travel each. The step-over moves at
+    # depth are safe because they sweep through wood the next row
+    # would cut anyway (the bit's footprint overlaps adjacent rows
+    # by 1-step_over of its diameter, ≈30% at the default setting).
+    points: list[tuple[float, float, float]] = []
     if cut_along_x:
         y = y_min
         direction = +1  # +1 = X+ stroke, -1 = X- stroke
         while y <= y_max + 1e-6:
-            if direction > 0:
-                chain = [(x_min, y, z), (x_max, y, z)]
+            stroke_start = (x_min if direction > 0 else x_max, y, z)
+            stroke_end = (x_max if direction > 0 else x_min, y, z)
+            if not points:
+                points.append(stroke_start)
             else:
-                chain = [(x_max, y, z), (x_min, y, z)]
-            chains.append(chain)
+                # Step-over connector from previous row's end to this
+                # row's start — at depth, sweeps through partially-
+                # uncut material that the next stroke covers fully.
+                points.append(stroke_start)
+            points.append(stroke_end)
             y += step
             direction = -direction
     else:
         x = x_min
         direction = +1
         while x <= x_max + 1e-6:
-            if direction > 0:
-                chain = [(x, y_min, z), (x, y_max, z)]
+            stroke_start = (x, y_min if direction > 0 else y_max, z)
+            stroke_end = (x, y_max if direction > 0 else y_min, z)
+            if not points:
+                points.append(stroke_start)
             else:
-                chain = [(x, y_max, z), (x, y_min, z)]
-            chains.append(chain)
+                points.append(stroke_start)
+            points.append(stroke_end)
             x += step
             direction = -direction
+
+    chains: list[Chain] = [points] if len(points) >= 2 else []
 
     # Each pass goes to its target depth in one shot, but if total depth
     # exceeds the bit's safe DOC, split into multiple raster layers

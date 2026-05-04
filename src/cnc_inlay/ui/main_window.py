@@ -1473,26 +1473,38 @@ class MainWindow(QMainWindow):
         )
         if not plan.chains:
             return
-        self._push_surfacing_to_canvas(plan, panel_w, panel_h)
+        self._push_surfacing_to_canvas(plan, panel_w, panel_h, bit=bit)
 
     def _push_surfacing_to_canvas(
-        self, plan, panel_w_mm: float, panel_h_mm: float, combined_z_mm: float | None = None,
+        self, plan, panel_w_mm: float, panel_h_mm: float,
+        combined_z_mm: float | None = None,
+        bit=None,
     ) -> None:
         """Render a surfacing plan in the Surfacing tab's 3D canvas.
 
         Re-pushes the layered wood-block (pocket / glue / plug) from
         current params before drawing the chains, so the visual is
-        always in sync with the sidebar values.
+        always in sync with the sidebar values. When ``bit`` is given,
+        renders chains via the multi-bit path so the canvas's "Tool
+        sequence" legend appears with the bit name + estimated time —
+        same UX as the Pocket/Plug tabs.
         """
         # Make sure the layered block reflects current params. This is
         # idempotent and cheap.
         self._push_stock_blocks_to_canvases()
-        # Reuse the existing chain renderer — surfacing chains are just
-        # closed-loop-style polylines at depth, the same shape the
-        # pocket-clear path renders.
-        self._surfacing_canvas3d.set_pocket_clear(plan.chains)
         # Stash the bit diameter so the live machine cone is sized right.
         self._surfacing_bit_diameter_mm = plan.bit_diameter_mm
+        if bit is not None and plan.chains:
+            # Estimate run time from cut length / bit's effective feed.
+            # Surfacing dialog defaults the bit to 1000 mm/min unless
+            # overridden, and that's what compute_surfacing_plan uses.
+            feed_mm_min = 1000.0
+            cut_seconds = plan.cut_length_mm / max(1.0, feed_mm_min) * 60.0
+            bit_chains = [(bit, plan.chains, "Surfacing", cut_seconds)]
+            self._surfacing_canvas3d.set_pocket_clear_by_bit(bit_chains)
+        else:
+            # Single-chain fallback (no bit info → no legend).
+            self._surfacing_canvas3d.set_pocket_clear(plan.chains)
         self._surfacing_canvas3d.reset_view()
 
     def _on_run_surfacing(self, plan, combined_z_mm: float = 0.0) -> None:
@@ -1511,9 +1523,16 @@ class MainWindow(QMainWindow):
         panel_h = params.pocket_stock_height_mm or (
             self._design.height_mm if self._design else 100.0
         )
+        # Resolve the Bit object from its name so the canvas legend
+        # can show the bit + estimated time, not just an unlabelled
+        # set of chains.
+        bit_obj = next(
+            (b for b in self._bits if b.name == plan.bit_name), None
+        )
         self._push_surfacing_to_canvas(
             plan, panel_w, panel_h,
             combined_z_mm=combined_z_mm if combined_z_mm > 0 else None,
+            bit=bit_obj,
         )
         # Switch the main tab strip to Surfacing so the user sees the
         # cone tracking immediately when streaming starts.
