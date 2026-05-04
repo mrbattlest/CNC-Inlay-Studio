@@ -34,7 +34,6 @@ from cnc_inlay.presets.bits import load_bits, load_catalog, save_bits
 
 _TYPE_LABELS = {
     "endmill": "Flat Endmill",
-    "ballnose": "Ball-Nose",
     "vbit": "V-Bit",
     "engraving": "Engraving",
     "surfacing": "Surfacing / Spoilboard",
@@ -98,7 +97,7 @@ class MyBitsDialog(QDialog):
 
         # Group by (type, shank_mm). Order: Flat Endmills first, then
         # Ball-Nose, V-Bit, Engraving. Within each, 1/8" before 1/4".
-        type_order = ["endmill", "ballnose", "vbit", "engraving", "surfacing"]
+        type_order = ["endmill", "vbit", "engraving", "surfacing"]
         sections: dict[tuple[str, float], list[Bit]] = defaultdict(list)
         for bit in self._catalog:
             sections[(bit.type, bit.shank_mm)].append(bit)
