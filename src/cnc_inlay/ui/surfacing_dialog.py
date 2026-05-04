@@ -104,24 +104,35 @@ class SurfacingDialog(QDialog):
         form.addRow("Panel width:", self._w_spin)
         form.addRow("Panel height:", self._h_spin)
 
-        # Combined Z-axis assembly thickness — auto-calculated as
-        # pocket_thickness + glue_gap + plug_thickness. The 3D view
-        # in the Surfacing tab uses this same value to size the wood
-        # block. User can override (e.g. measured-on-the-bench) if
-        # the calculated value disagrees with reality.
+        # Combined Z-axis assembly thickness — the plug feature sits
+        # INSIDE the pocket cavity, so only the backing portion of the
+        # plug stock adds to the panel height above the glue line.
+        # Plug backing = plug_thickness - pocket_depth - glue_gap.
+        # Combined = pocket_thickness + glue_gap + plug_backing
+        #         = pocket_thickness + plug_thickness - pocket_depth.
+        plug_backing = max(
+            0.05,
+            default_plug_thickness_mm - default_pocket_depth_mm - default_glue_gap_mm,
+        )
         combined = max(
             0.5,
-            default_pocket_thickness_mm + default_glue_gap_mm + default_plug_thickness_mm,
+            default_pocket_thickness_mm + default_glue_gap_mm + plug_backing,
         )
         self._z_spin = self._mm_spin(combined, 1.0, 200.0)
         self._z_spin.valueChanged.connect(self._refresh_summary)
         form.addRow("Combined Z thickness:", self._z_spin)
         z_hint = QLabel(
             f"Auto: pocket {default_pocket_thickness_mm:.2f} + glue gap "
-            f"{default_glue_gap_mm:.2f} + plug {default_plug_thickness_mm:.2f} = "
-            f"<b>{combined:.2f} mm</b>"
+            f"{default_glue_gap_mm:.2f} + plug backing {plug_backing:.2f} = "
+            f"<b>{combined:.2f} mm</b><br>"
+            f"<span style='color:#9aa0a6;'>(plug backing = plug "
+            f"{default_plug_thickness_mm:.2f} − pocket depth "
+            f"{default_pocket_depth_mm:.2f} − glue gap "
+            f"{default_glue_gap_mm:.2f}; the rest of the plug sits "
+            f"inside the pocket)</span>"
         )
         z_hint.setTextFormat(Qt.RichText)
+        z_hint.setWordWrap(True)
         z_hint.setStyleSheet("color:#9aa0a6;")
         form.addRow("", z_hint)
 

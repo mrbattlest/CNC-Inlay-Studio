@@ -805,15 +805,21 @@ class MainWindow(QMainWindow):
         l_h = params.plug_stock_height_mm or self._design.height_mm
         l_t = params.plug_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
         self._plug_canvas3d.set_stock_block(l_w, l_h, l_t)
-        # Surfacing: combined assembled-panel block as 3 stacked
-        # coloured layers — pocket stock (warm brown), glue gap (amber
-        # band, often quite thin so highlighted in a higher-contrast
-        # colour), and plug backing (lighter wood tone). Footprint =
-        # pocket stock because the assembled panel sits on the pocket
-        # wood.
+        # Surfacing: assembled-panel block as 3 stacked coloured layers.
+        #
+        # Geometry: the plug feature inserts INTO the pocket cavity, so
+        # only the BACKING portion of the plug stock (the part above
+        # the cleared waste plane) contributes to the panel height
+        # above the glue line. Plug feature height = pocket_depth +
+        # glue_gap (taller than the cavity by glue_gap so it bottoms
+        # out and the plug stock body sits glue_gap above the pocket
+        # top). Plug backing thickness = plug_thickness - pocket_depth
+        # - glue_gap. Combined Z = pocket_thickness + glue_gap +
+        # plug_backing = pocket_thickness + plug_thickness - pocket_depth.
+        plug_backing = max(0.05, l_t - params.pocket_depth_mm - params.glue_gap_mm)
         pocket_layer = (p_t, (0.62, 0.45, 0.28, 1.0), "Pocket")
         glue_layer = (max(0.05, params.glue_gap_mm), (0.95, 0.70, 0.20, 1.0), "Glue gap")
-        plug_layer = (l_t, (0.85, 0.72, 0.50, 1.0), "Plug backing")
+        plug_layer = (plug_backing, (0.85, 0.72, 0.50, 1.0), "Plug backing")
         self._surfacing_canvas3d.set_stock_layers(p_w, p_h, [pocket_layer, glue_layer, plug_layer])
 
     def _refresh_stock_outlines(self) -> None:
