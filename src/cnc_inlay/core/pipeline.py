@@ -601,6 +601,7 @@ def _rest_machine_chains(
     depth_mm: float,
     step_over_frac: float,
     pass_depth_mm: float,
+    priority_region: Polygon | MultiPolygon | None = None,
     progress_cb: Callable[[float, str], None] | None = None,
     progress_lo: float = 0.0,
     progress_hi: float = 100.0,
@@ -615,6 +616,14 @@ def _rest_machine_chains(
     boundaries (because adjacent rings don't fully overlap there), and those
     gaps then weren't seen as residual — so the next bit didn't pick them up.
     Computing residual from the actual swept geometry catches those crescents.
+
+    ``priority_region`` (optional): when set, every bit AFTER the first/
+    largest one only cleans up residual that falls inside this region.
+    Used by the plug side to skip "decorative" cleanup of rectangular-
+    stock corners — those slivers are well outside the actual plug
+    feature and don't justify a tool change to a smaller bit. The
+    largest bit still clears the entire ``region`` so the bulk pass
+    isn't affected.
 
     Bits that contribute no new chains are dropped from the returned list, so
     we never pause for a tool change that does nothing.
@@ -636,6 +645,7 @@ def _rest_machine_chains(
             pass
 
     for idx, bit in enumerate(sequence):
+        is_first_bit = (idx == 0)
         is_final_bit = (idx == len(sequence) - 1)
         radius = bit.diameter_mm / 2.0
         _report(idx, 0.05, f"{bit.name}: computing residual region")
@@ -648,6 +658,17 @@ def _rest_machine_chains(
                 target = region.difference(cumulative_cleared).buffer(0)
             except Exception:
                 target = region
+        # Smaller-bit cleanup is restricted to the priority region (e.g.
+        # the band around the plug feature). The largest bit still does
+        # its full bulk pass on ``region`` so nothing gets skipped on the
+        # primary clearance — only the cosmetic outer-corner residual that
+        # would otherwise force a tool change to a 1 mm bit just to clean
+        # up a stock corner that isn't part of the actual inlay.
+        if not is_first_bit and priority_region is not None and not priority_region.is_empty:
+            try:
+                target = target.intersection(priority_region).buffer(0)
+            except Exception:
+                pass
         if target.is_empty:
             continue
 
@@ -809,11 +830,27 @@ def _generate_plug_side(
         endmill, params.plug_roughing_bits, bit_library
     )
     plug_depth = params.pocket_depth_mm + params.glue_gap_mm
+    # Priority region for finer-bit cleanup on the plug side: the
+    # boundary_offset band around the mirrored design feature. Everything
+    # beyond this band (e.g. the rectangular stock's outer corners) gets
+    # the largest roughing bit's natural-radius residual left as-is —
+    # those corners aren't part of the inlay surface, so swapping to a
+    # 1 mm finishing bit just to clean them up is wasted time.
+    plug_priority: Polygon | MultiPolygon | None = None
+    try:
+        envelope = mirrored.buffer(params.boundary_offset_mm)
+        intersected = envelope.intersection(complement).buffer(0)
+        if not intersected.is_empty:
+            plug_priority = intersected
+    except Exception:
+        plug_priority = None
+
     bit_chains = _rest_machine_chains(
         complement, sequence,
         depth_mm=plug_depth,
         step_over_frac=params.pocket_step_over_frac,
         pass_depth_mm=params.pass_depth_mm,
+        priority_region=plug_priority,
         progress_cb=progress_cb,
         progress_lo=progress_lo,
         progress_hi=progress_hi,
