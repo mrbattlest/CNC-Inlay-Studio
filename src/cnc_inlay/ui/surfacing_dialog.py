@@ -32,7 +32,11 @@ class SurfacingDialog(QDialog):
     """Pick bit + parameters, preview the plan, run / save."""
 
     runRequested = Signal(object, float)   # SurfacingPlan, combined_z_mm
-    saveRequested = Signal(object)         # SurfacingPlan
+    saveRequested = Signal(object)         # SurfacingPlan (legacy)
+    # Persist current dialog state to the project file. Carries the
+    # whole settings dict (bit_name, panel_w/h, depth, combined_z,
+    # rpm, feed, pass_depth) so the dialog re-opens pre-filled.
+    saveSettingsRequested = Signal(dict)
 
     def __init__(
         self,
@@ -46,6 +50,7 @@ class SurfacingDialog(QDialog):
         default_plug_thickness_mm: float,
         default_pocket_thickness_mm: float,
         machine_connected: bool,
+        saved_settings: dict | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Surface plug backing")
@@ -200,6 +205,13 @@ class SurfacingDialog(QDialog):
 
         # --- Buttons ---
         btn_row = QHBoxLayout()
+        save_btn = QPushButton("💾 Save")
+        save_btn.setToolTip(
+            "Save these settings into the .inlay project file so they "
+            "pre-fill next time you open this dialog. Doesn't run anything."
+        )
+        save_btn.clicked.connect(self._on_save_settings_clicked)
+        btn_row.addWidget(save_btn)
         btn_row.addStretch(1)
         self._run_btn = QPushButton("▶ Run on Machine")
         self._run_btn.setStyleSheet(
@@ -222,6 +234,10 @@ class SurfacingDialog(QDialog):
         btn_row.addWidget(cancel_btn)
         outer.addLayout(btn_row)
 
+        # Restore previously-saved values (if any) AFTER all widgets
+        # are constructed and before the first summary refresh.
+        if saved_settings:
+            self._apply_saved_settings(saved_settings)
         self._refresh_summary()
 
     @staticmethod
@@ -295,4 +311,57 @@ class SurfacingDialog(QDialog):
         if plan is None or not plan.gcode:
             return
         self.runRequested.emit(plan, float(self._z_spin.value()))
+        self.accept()
+
+    def _current_settings_dict(self) -> dict:
+        """Snapshot of every dialog input — used for both saving to
+        the project file and restoring on next open."""
+        bit = self._bit_combo.currentData()
+        return {
+            "bit_name": bit.name if bit is not None else None,
+            "panel_w_mm": float(self._w_spin.value()),
+            "panel_h_mm": float(self._h_spin.value()),
+            "depth_to_remove_mm": float(self._depth_spin.value()),
+            "combined_z_mm": float(self._z_spin.value()),
+            "rpm": int(self._rpm_spin.value()),
+            "feed_mm_min": int(self._feed_spin.value()),
+            "pass_depth_mm": float(self._pass_depth_spin.value()),
+        }
+
+    def _apply_saved_settings(self, s: dict) -> None:
+        """Pre-fill widgets from a previously-saved settings dict."""
+        bit_name = s.get("bit_name")
+        if bit_name:
+            for i in range(self._bit_combo.count()):
+                if self._bit_combo.itemText(i) == bit_name:
+                    self._bit_combo.setCurrentIndex(i)
+                    break
+        for spin, key in (
+            (self._w_spin, "panel_w_mm"),
+            (self._h_spin, "panel_h_mm"),
+            (self._depth_spin, "depth_to_remove_mm"),
+            (self._z_spin, "combined_z_mm"),
+            (self._pass_depth_spin, "pass_depth_mm"),
+        ):
+            v = s.get(key)
+            if v is not None:
+                try:
+                    spin.setValue(float(v))
+                except (TypeError, ValueError):
+                    pass
+        for spin, key in (
+            (self._rpm_spin, "rpm"),
+            (self._feed_spin, "feed_mm_min"),
+        ):
+            v = s.get(key)
+            if v is not None:
+                try:
+                    spin.setValue(int(v))
+                except (TypeError, ValueError):
+                    pass
+
+    def _on_save_settings_clicked(self) -> None:
+        """Persist current dialog state to the project file (without
+        running) by emitting saveSettingsRequested."""
+        self.saveSettingsRequested.emit(self._current_settings_dict())
         self.accept()

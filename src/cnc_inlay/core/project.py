@@ -59,6 +59,13 @@ class ProjectFile:
     # / zoom they left at. None on legacy files → fall back to the canvas
     # default (X right, Y away, tilted 30° back from top-down).
     view_orientation: dict | None = None
+    # Saved surfacing-pass settings — populated by the user clicking
+    # Save in Settings → Surface plug backing… so the same bit /
+    # depth / feed / RPM are pre-filled the next time they open the
+    # dialog. Opaque dict (keys: bit_name, panel_w, panel_h,
+    # depth_to_remove, combined_z, rpm, feed, pass_depth). None on
+    # legacy files / projects that have never had surfacing saved.
+    surfacing_settings: dict | None = None
 
 
 def _params_to_dict(p: InlayParams) -> dict:
@@ -175,6 +182,7 @@ def save_project(path: str | Path, project: ProjectFile) -> None:
         "cached_result": project.cached_result,
         "cache_signature": project.cache_signature,
         "view_orientation": project.view_orientation,
+        "surfacing_settings": project.surfacing_settings,
     }
     Path(path).write_text(json.dumps(data, indent=2))
 
@@ -207,6 +215,7 @@ def load_project(path: str | Path) -> ProjectFile:
         cached_result=data.get("cached_result"),
         cache_signature=data.get("cache_signature"),
         view_orientation=data.get("view_orientation"),
+        surfacing_settings=data.get("surfacing_settings"),
     )
     # v5 → v6: any global speed override gets attached to the saved finishing
     # bit so the user's prior tuning carries forward into the new per-bit

@@ -270,6 +270,10 @@ class MainWindow(QMainWindow):
         # edited, etc.). Used to drive the "Save changes?" prompt on Close
         # Project / window-close. Cleared on save / open / new project.
         self._is_dirty: bool = False
+        # Saved surfacing-dialog state. Persists into the .inlay file
+        # so the user's bit / depth / feed / RPM choices pre-fill the
+        # next time they open Settings → Surface plug backing.
+        self._surfacing_settings: dict | None = None
 
         # Four canvases — pocket and plug each get their own 3D and Top-down view.
         # Each canvas is locked into the right view_mode at construction.
@@ -955,6 +959,7 @@ class MainWindow(QMainWindow):
             cached_result=cached_result,
             cache_signature=cache_signature,
             view_orientation=view_orientation,
+            surfacing_settings=self._surfacing_settings,
         )
 
     def _on_save_project(self) -> bool:
@@ -1241,6 +1246,11 @@ class MainWindow(QMainWindow):
         # Spinboxes / overrides.
         self._controls.apply_params(project.params)
 
+        # Restore saved surfacing-dialog settings so the next opening of
+        # Settings → Surface plug backing pre-fills with the user's
+        # previously-saved choices instead of bare auto-defaults.
+        self._surfacing_settings = project.surfacing_settings
+
         # Post-load step: applies the saved inlay dimensions (if any) and the
         # final window-title / status bar updates. Runs AFTER the design has
         # been parsed and installed by the async _load_design path. Defined
@@ -1446,10 +1456,22 @@ class MainWindow(QMainWindow):
             default_plug_thickness_mm=params.plug_thickness_mm,
             default_pocket_thickness_mm=params.pocket_thickness_mm,
             machine_connected=self._controller.is_connected,
+            saved_settings=self._surfacing_settings,
         )
         dlg.runRequested.connect(self._on_run_surfacing)
         dlg.saveRequested.connect(self._on_save_surfacing_gcode)
+        dlg.saveSettingsRequested.connect(self._on_save_surfacing_settings)
         dlg.exec()
+
+    def _on_save_surfacing_settings(self, settings: dict) -> None:
+        """Settings → Surface plug backing → Save: stash the dict on
+        the window and mark the project dirty so it lands in the
+        .inlay file on next save."""
+        self._surfacing_settings = dict(settings)
+        self._is_dirty = True
+        self._set_status(
+            "Surfacing settings saved into the project — Save Project to persist to disk."
+        )
 
     def _refresh_surfacing_preview(self) -> None:
         """Generate a default surfacing plan (using current params and
@@ -1495,11 +1517,24 @@ class MainWindow(QMainWindow):
         # Stash the bit diameter so the live machine cone is sized right.
         self._surfacing_bit_diameter_mm = plan.bit_diameter_mm
         if bit is not None and plan.chains:
-            # Estimate run time from cut length / bit's effective feed.
-            # Surfacing dialog defaults the bit to 1000 mm/min unless
-            # overridden, and that's what compute_surfacing_plan uses.
-            feed_mm_min = 1000.0
-            cut_seconds = plan.cut_length_mm / max(1.0, feed_mm_min) * 60.0
+            # Realistic estimate via the trapezoidal acceleration
+            # model + realworld fudge that the inlay pipeline uses,
+            # plus the same +8 s per-bit overhead (spindle ramp-up
+            # dwell + bit-engagement settle). Surfacing dialog
+            # defaults to 1000 mm/min feed.
+            from cnc_inlay.sim.simulator import (
+                build_segments, total_duration_seconds,
+            )
+            try:
+                segs = build_segments(
+                    plan.chains,
+                    feed_mm_min=1000.0,
+                    plunge_mm_min=300.0,
+                    safe_z_mm=5.0,
+                )
+                cut_seconds = total_duration_seconds(segs) + 8.0
+            except Exception:
+                cut_seconds = plan.cut_length_mm / 1000.0 * 60.0
             bit_chains = [(bit, plan.chains, "Surfacing", cut_seconds)]
             self._surfacing_canvas3d.set_pocket_clear_by_bit(bit_chains)
         else:

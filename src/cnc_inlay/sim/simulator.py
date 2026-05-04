@@ -33,10 +33,13 @@ class SegmentKind(str, Enum):
 _DEFAULT_ACCEL_XY_MM_PER_S2 = 150.0
 _DEFAULT_ACCEL_Z_MM_PER_S2 = 100.0
 # Final fudge applied on top of the per-segment trapezoidal model to
-# capture chain-to-chain settling, planner-buffer underfills on bursts of
-# tiny segments, and the streamer's character-counting gap. Empirically
-# brings the estimate within ~5% on hardwood pocket runs.
-_REALWORLD_FUDGE = 1.08
+# capture chain-to-chain settling, planner-buffer underfills on bursts
+# of tiny segments, and the streamer's character-counting gap. Bumped
+# from 1.08 to 1.18 after users reported per-bit estimates were running
+# 15-20% optimistic on real cuts — the trapezoidal model assumes
+# instant cornering and full feed between every chain, but on a
+# hobby CNC each chain start has a measurable settle time.
+_REALWORLD_FUDGE = 1.18
 
 
 def _trapezoidal_seconds(

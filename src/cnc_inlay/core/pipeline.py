@@ -315,6 +315,11 @@ def _emit_side(
         )) if chains_passes else 0.0
     except Exception:
         single_duration_s = 0.0
+    # Fixed per-bit overhead: 3 s spindle ramp-up dwell + ~5 s of
+    # bit-engagement settling before the planner reaches steady
+    # state. Same value the multi-bit path uses.
+    if chains_passes:
+        single_duration_s += 8.0
     return Side(
         clear_preview=chains_ordered,
         chains_full=chains_passes,
@@ -419,6 +424,15 @@ def _emit_multi_bit_side(
             duration_s = total_duration_seconds(segs)
         except Exception:
             duration_s = 0.0
+        # Fixed per-bit overhead: 3 s spindle ramp-up dwell (G4 P3
+        # emitted after every M3) + ~5 s of bit-engagement settling
+        # before the planner reaches steady state. Plus 90 s of
+        # tool-change time for any non-first bit (operator manually
+        # swaps the bit and re-zeros Z at the M0 pause). Without
+        # this, multi-bit estimates were 15-30% optimistic.
+        duration_s += 8.0
+        if i > 0:
+            duration_s += 90.0
         bit_chain_breakdown.append((bit, chains, role, duration_s))
 
     park_xy = _tool_change_park_xy_mm(design, params, is_plug)
