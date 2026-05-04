@@ -31,8 +31,8 @@ from cnc_inlay.core.pipeline import SurfacingPlan, compute_surfacing_plan
 class SurfacingDialog(QDialog):
     """Pick bit + parameters, preview the plan, run / save."""
 
-    runRequested = Signal(object)   # SurfacingPlan
-    saveRequested = Signal(object)  # SurfacingPlan
+    runRequested = Signal(object, float)   # SurfacingPlan, combined_z_mm
+    saveRequested = Signal(object)         # SurfacingPlan
 
     def __init__(
         self,
@@ -44,17 +44,20 @@ class SurfacingDialog(QDialog):
         default_glue_gap_mm: float,
         default_pocket_depth_mm: float,
         default_plug_thickness_mm: float,
+        default_pocket_thickness_mm: float,
         machine_connected: bool,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Surface plug backing")
         self.setMinimumWidth(560)
+        self.setMinimumHeight(680)
 
         self._surfacing_bits = list(surfacing_bits)
         self._machine_connected = machine_connected
         self._glue_gap_mm = default_glue_gap_mm
         self._pocket_depth_mm = default_pocket_depth_mm
         self._plug_thickness_mm = default_plug_thickness_mm
+        self._pocket_thickness_mm = default_pocket_thickness_mm
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 18, 20, 18)
@@ -87,18 +90,40 @@ class SurfacingDialog(QDialog):
         form.addRow("Surfacing bit:", self._bit_combo)
 
         # --- Panel dimensions ---
+        # Width and height on separate labelled rows. Side-by-side in a
+        # QFormLayout was getting clipped on macOS because the wrapping
+        # QWidget didn't always respect the spinboxes' native height,
+        # cutting off the up/down arrows. Two clean rows side-step that
+        # and read more clearly anyway.
         self._w_spin = self._mm_spin(default_panel_width_mm, 10.0, 1000.0)
-        self._h_spin = self._mm_spin(default_panel_height_mm, 10.0, 1000.0)
+        self._w_spin.setMinimumHeight(28)
         self._w_spin.valueChanged.connect(self._refresh_summary)
+        self._h_spin = self._mm_spin(default_panel_height_mm, 10.0, 1000.0)
+        self._h_spin.setMinimumHeight(28)
         self._h_spin.valueChanged.connect(self._refresh_summary)
-        wh_row = QHBoxLayout()
-        wh_row.addWidget(self._w_spin)
-        wh_row.addWidget(QLabel("×"))
-        wh_row.addWidget(self._h_spin)
-        wh_row.addStretch(1)
-        wh_wrap = QWidget()
-        wh_wrap.setLayout(wh_row)
-        form.addRow("Panel width × height (mm):", wh_wrap)
+        form.addRow("Panel width:", self._w_spin)
+        form.addRow("Panel height:", self._h_spin)
+
+        # Combined Z-axis assembly thickness — auto-calculated as
+        # pocket_thickness + glue_gap + plug_thickness. The 3D view
+        # in the Surfacing tab uses this same value to size the wood
+        # block. User can override (e.g. measured-on-the-bench) if
+        # the calculated value disagrees with reality.
+        combined = max(
+            0.5,
+            default_pocket_thickness_mm + default_glue_gap_mm + default_plug_thickness_mm,
+        )
+        self._z_spin = self._mm_spin(combined, 1.0, 200.0)
+        self._z_spin.valueChanged.connect(self._refresh_summary)
+        form.addRow("Combined Z thickness:", self._z_spin)
+        z_hint = QLabel(
+            f"Auto: pocket {default_pocket_thickness_mm:.2f} + glue gap "
+            f"{default_glue_gap_mm:.2f} + plug {default_plug_thickness_mm:.2f} = "
+            f"<b>{combined:.2f} mm</b>"
+        )
+        z_hint.setTextFormat(Qt.RichText)
+        z_hint.setStyleSheet("color:#9aa0a6;")
+        form.addRow("", z_hint)
 
         # --- Depth to remove (auto from glue_gap + safety margin) ---
         self._auto_depth_label = QLabel(
@@ -197,6 +222,7 @@ class SurfacingDialog(QDialog):
         sb.setSuffix(" mm")
         sb.setValue(value)
         sb.setKeyboardTracking(False)
+        sb.setMinimumHeight(28)
         return sb
 
     def _build_plan(self) -> SurfacingPlan | None:
@@ -257,5 +283,5 @@ class SurfacingDialog(QDialog):
         plan = self._build_plan()
         if plan is None or not plan.gcode:
             return
-        self.runRequested.emit(plan)
+        self.runRequested.emit(plan, float(self._z_spin.value()))
         self.accept()

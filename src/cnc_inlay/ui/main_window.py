@@ -1428,26 +1428,29 @@ class MainWindow(QMainWindow):
             default_glue_gap_mm=params.glue_gap_mm,
             default_pocket_depth_mm=params.pocket_depth_mm,
             default_plug_thickness_mm=params.plug_thickness_mm,
+            default_pocket_thickness_mm=params.pocket_thickness_mm,
             machine_connected=self._controller.is_connected,
         )
         dlg.runRequested.connect(self._on_run_surfacing)
         dlg.saveRequested.connect(self._on_save_surfacing_gcode)
         dlg.exec()
 
-    def _push_surfacing_to_canvas(self, plan, panel_w_mm: float, panel_h_mm: float) -> None:
+    def _push_surfacing_to_canvas(
+        self, plan, panel_w_mm: float, panel_h_mm: float, combined_z_mm: float | None = None,
+    ) -> None:
         """Render a surfacing plan in the Surfacing tab's 3D canvas.
 
-        Combined-assembly thickness = pocket_thickness + plug_thickness
-        − pocket_depth + glue_gap. After gluing the plug into the pocket,
-        the assembly's top surface sits this far above the bed; the
-        surfacing pass removes the proud portion (glue_gap + safety) to
-        bring the inlay flush with the pocket-side wood.
+        Combined-assembly Z (pocket_thickness + glue_gap + plug_thickness)
+        either comes from the dialog (where the user can override the
+        auto-calculated default to match their measured panel) or is
+        re-derived here from the project params.
         """
-        params = self._controls.current_params()
-        pt = params.pocket_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
-        lt = params.plug_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
-        combined = max(0.5, pt + lt - params.pocket_depth_mm + params.glue_gap_mm)
-        self._surfacing_canvas3d.set_stock_block(panel_w_mm, panel_h_mm, combined)
+        if combined_z_mm is None:
+            params = self._controls.current_params()
+            pt = params.pocket_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
+            lt = params.plug_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
+            combined_z_mm = max(0.5, pt + params.glue_gap_mm + lt)
+        self._surfacing_canvas3d.set_stock_block(panel_w_mm, panel_h_mm, combined_z_mm)
         # Reuse the existing chain renderer — surfacing chains are just
         # closed-loop-style polylines at depth, the same shape the
         # pocket-clear path renders.
@@ -1456,7 +1459,7 @@ class MainWindow(QMainWindow):
         self._surfacing_bit_diameter_mm = plan.bit_diameter_mm
         self._surfacing_canvas3d.reset_view()
 
-    def _on_run_surfacing(self, plan) -> None:
+    def _on_run_surfacing(self, plan, combined_z_mm: float = 0.0) -> None:
         """User clicked Run on Machine in the surfacing dialog. Push the
         plan to the Surfacing tab so they can watch it run, switch the
         tab into focus, then confirm + stream."""
@@ -1472,7 +1475,10 @@ class MainWindow(QMainWindow):
         panel_h = params.pocket_stock_height_mm or (
             self._design.height_mm if self._design else 100.0
         )
-        self._push_surfacing_to_canvas(plan, panel_w, panel_h)
+        self._push_surfacing_to_canvas(
+            plan, panel_w, panel_h,
+            combined_z_mm=combined_z_mm if combined_z_mm > 0 else None,
+        )
         # Switch the main tab strip to Surfacing so the user sees the
         # cone tracking immediately when streaming starts.
         for i in range(self._main_tabs.count()):
