@@ -60,8 +60,16 @@
   { "name": "0.2 mm tip 60° engraving (1/8\" shank)", "type": "engraving", "angle_deg": 60, "shank_mm": 3.175, "diameter_mm": 0.2, "max_rpm": 18000, "flutes": 1 },
   { "name": "0.3 mm tip 60° engraving (1/8\" shank)", "type": "engraving", "angle_deg": 60, "shank_mm": 3.175, "diameter_mm": 0.3, "max_rpm": 16000, "flutes": 1 },
 
-  { "name": "Yonico 14971 — 19 mm (3/4\") spoilboard surfacer (1/4\" shank, 3 inserts)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 19.0, "max_rpm": 12000, "flutes": 3 },
-  { "name": "Yonico 14975 — 25 mm (1\") spoilboard surfacer (1/4\" shank, 3 inserts)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 25.0, "max_rpm": 12000, "flutes": 3 },
-  { "name": "Genmitsu FMB-16 — 22 mm spoilboard surfacer (1/4\" shank, insert)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 22.0, "max_rpm": 12000, "flutes": 1 },
-  { "name": "SpeTool 22 mm spoilboard surfacer (1/4\" shank, 4-flute solid carbide)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 22.0, "max_rpm": 12000, "flutes": 4 }
+  { "name": "12 mm surfacing bit (1/4\" shank, 2-flute)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 12.0, "max_rpm": 14000, "flutes": 2 },
+  { "name": "16 mm surfacing bit (1/4\" shank, 2-flute)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 16.0, "max_rpm": 12000, "flutes": 2 },
+  { "name": "16 mm surfacing bit (1/4\" shank, 4-flute)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 16.0, "max_rpm": 12000, "flutes": 4 },
+  { "name": "19 mm (3/4\") surfacing bit (1/4\" shank, insert)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 19.0, "max_rpm": 12000, "flutes": 3 },
+  { "name": "19 mm (3/4\") surfacing bit (1/4\" shank, 4-flute solid)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 19.0, "max_rpm": 12000, "flutes": 4 },
+  { "name": "22 mm surfacing bit (1/4\" shank, insert)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 22.0, "max_rpm": 12000, "flutes": 1 },
+  { "name": "22 mm surfacing bit (1/4\" shank, 4-flute solid)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 22.0, "max_rpm": 12000, "flutes": 4 },
+  { "name": "25 mm (1\") surfacing bit (1/4\" shank, insert)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 25.0, "max_rpm": 12000, "flutes": 3 },
+  { "name": "25 mm (1\") surfacing bit (1/4\" shank, 4-flute solid)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 25.0, "max_rpm": 10000, "flutes": 4 },
+  { "name": "28 mm surfacing bit (1/4\" shank, insert)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 28.0, "max_rpm": 10000, "flutes": 3 },
+  { "name": "32 mm surfacing bit (1/4\" shank, insert)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 32.0, "max_rpm": 10000, "flutes": 3 },
+  { "name": "38 mm (1.5\") surfacing bit (1/4\" shank, insert)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 38.0, "max_rpm": 10000, "flutes": 3 }
 ]

@@ -302,10 +302,18 @@ class MainWindow(QMainWindow):
         # textures so the user can sanity-check colour pairings before cutting.
         self._finished_canvas = FinishedCanvas(self)
 
+        # Fourth top-level tab: surfacing 3D preview. When the user opens
+        # Settings → Surface plug backing… and clicks Run, the surfacing
+        # raster chains are pushed here and the streaming machine cone
+        # tracks live in this canvas — same UX as Pocket / Plug runs.
+        self._surfacing_canvas3d = Canvas3D(self)
+        self._surfacing_canvas3d.set_view_mode("pocket")  # not mirrored
+
         self._main_tabs = QTabWidget(self)
         self._main_tabs.addTab(self._pocket_stack, "Pocket")
         self._main_tabs.addTab(self._plug_stack, "Plug")
         self._main_tabs.addTab(self._finished_canvas, "Finished")
+        self._main_tabs.addTab(self._surfacing_canvas3d, "Surfacing")
         # 40% larger tab font so Pocket / Plug / Finished read as primary
         # navigation, not nested controls. Bold for the same reason.
         self._main_tabs.setStyleSheet(
@@ -614,20 +622,16 @@ class MainWindow(QMainWindow):
         )
         my_bits_act.triggered.connect(self._on_open_my_bits)
         settings_menu.addAction(my_bits_act)
-        prefs_act = QAction("Preferences…", self)
-        prefs_act.triggered.connect(self._on_open_preferences)
-        settings_menu.addAction(prefs_act)
-
-        # Tools menu — separate from Settings because these are
-        # job-shaped actions (run a surfacing pass, etc.) rather than
-        # one-time configuration.
-        tools_menu = menu.addMenu("&Tools")
         surface_act = QAction("Surface plug backing…", self)
         surface_act.setStatusTip(
             "Plane the back of an assembled inlay flush, exposing the inlay"
         )
         surface_act.triggered.connect(self._on_open_surfacing_dialog)
-        tools_menu.addAction(surface_act)
+        settings_menu.addAction(surface_act)
+
+        prefs_act = QAction("Preferences…", self)
+        prefs_act.triggered.connect(self._on_open_preferences)
+        settings_menu.addAction(prefs_act)
 
         # Help menu — About + Check for Updates. macOS auto-promotes any
         # action whose menuRole is AboutRole into the application menu (the
@@ -761,7 +765,7 @@ class MainWindow(QMainWindow):
     # ----------------------------------------------------------------- helpers
 
     def _all_3d_canvases(self):
-        return (self._pocket_canvas3d, self._plug_canvas3d)
+        return (self._pocket_canvas3d, self._plug_canvas3d, self._surfacing_canvas3d)
 
     def _all_2d_canvases(self):
         return (self._pocket_canvas2d, self._plug_canvas2d)
@@ -1394,10 +1398,18 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _on_open_surfacing_dialog(self) -> None:
-        """Tools → Surface plug backing… — open the surfacing planner."""
+        """Settings → Surface plug backing… — open the surfacing planner."""
         from cnc_inlay.ui.surfacing_dialog import SurfacingDialog
-        # Available surfacing bits = anything in My Bits with type "surfacing".
-        surfacing_bits = [b for b in self._bits if b.type == "surfacing"]
+        # Surfacing-bit candidates = dedicated surfacing bits PLUS any
+        # owned flat endmill (a roughing endmill works fine for small
+        # surfacing jobs and the user may not own a dedicated surfacer).
+        # Sort surfacing bits first (largest → smallest), then endmills
+        # by diameter so the friendliest defaults bubble to the top.
+        surfacers = [b for b in self._bits if b.type == "surfacing"]
+        endmills = [b for b in self._bits if b.type == "endmill"]
+        surfacers.sort(key=lambda b: -b.diameter_mm)
+        endmills.sort(key=lambda b: -b.diameter_mm)
+        surfacing_bits = surfacers + endmills
         params = self._controls.current_params()
         # Default panel dimensions = the pocket stock dimensions, since
         # the assembled panel is the same physical piece. Fall back to
@@ -1422,14 +1434,51 @@ class MainWindow(QMainWindow):
         dlg.saveRequested.connect(self._on_save_surfacing_gcode)
         dlg.exec()
 
+    def _push_surfacing_to_canvas(self, plan, panel_w_mm: float, panel_h_mm: float) -> None:
+        """Render a surfacing plan in the Surfacing tab's 3D canvas.
+
+        Combined-assembly thickness = pocket_thickness + plug_thickness
+        − pocket_depth + glue_gap. After gluing the plug into the pocket,
+        the assembly's top surface sits this far above the bed; the
+        surfacing pass removes the proud portion (glue_gap + safety) to
+        bring the inlay flush with the pocket-side wood.
+        """
+        params = self._controls.current_params()
+        pt = params.pocket_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
+        lt = params.plug_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
+        combined = max(0.5, pt + lt - params.pocket_depth_mm + params.glue_gap_mm)
+        self._surfacing_canvas3d.set_stock_block(panel_w_mm, panel_h_mm, combined)
+        # Reuse the existing chain renderer — surfacing chains are just
+        # closed-loop-style polylines at depth, the same shape the
+        # pocket-clear path renders.
+        self._surfacing_canvas3d.set_pocket_clear(plan.chains)
+        # Stash the bit diameter so the live machine cone is sized right.
+        self._surfacing_bit_diameter_mm = plan.bit_diameter_mm
+        self._surfacing_canvas3d.reset_view()
+
     def _on_run_surfacing(self, plan) -> None:
-        """User clicked Run on Machine in the surfacing dialog. Confirm
-        once more, then stream the surfacing G-code."""
+        """User clicked Run on Machine in the surfacing dialog. Push the
+        plan to the Surfacing tab so they can watch it run, switch the
+        tab into focus, then confirm + stream."""
         if not self._controller.is_connected:
             QMessageBox.information(
                 self, "Not connected", "Connect to the CNC machine first."
             )
             return
+        params = self._controls.current_params()
+        panel_w = params.pocket_stock_width_mm or (
+            self._design.width_mm if self._design else 200.0
+        )
+        panel_h = params.pocket_stock_height_mm or (
+            self._design.height_mm if self._design else 100.0
+        )
+        self._push_surfacing_to_canvas(plan, panel_w, panel_h)
+        # Switch the main tab strip to Surfacing so the user sees the
+        # cone tracking immediately when streaming starts.
+        for i in range(self._main_tabs.count()):
+            if self._main_tabs.tabText(i) == "Surfacing":
+                self._main_tabs.setCurrentIndex(i)
+                break
         confirm = QMessageBox.question(
             self,
             "Run surfacing",
@@ -2919,6 +2968,12 @@ class MainWindow(QMainWindow):
             # reason — kept consistent here.
             self._plug_canvas2d.set_machine_position(wpos.x, wpos.y, wpos.z, bit_d)
             self._plug_canvas3d.set_machine_position(wpos.x, wpos.y, wpos.z, bit_d)
+        elif self._streaming_side == "surfacing":
+            # Surfacing uses whatever bit the user picked in the
+            # Surface plug backing dialog — it's stored on the canvas
+            # in self._surfacing_bit_diameter_mm when the plan is pushed.
+            sd = getattr(self, "_surfacing_bit_diameter_mm", 6.0)
+            self._surfacing_canvas3d.set_machine_position(wpos.x, wpos.y, wpos.z, sd)
 
     # ----------------------------------------------------------- setup guide
 

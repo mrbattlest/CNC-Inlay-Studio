@@ -121,6 +121,9 @@ class MyBitsDialog(QDialog):
                     self._rows.append(_CatalogRow(bit=bit, checkbox=cb, section_key=key))
                 self._section_widgets[key] = row_widgets
 
+        # Bottom padding so the last section's checkboxes aren't pinned
+        # right against the scroll-area edge / footer buttons.
+        body_layout.addSpacing(28)
         body_layout.addStretch(1)
         scroll.setWidget(body)
         outer.addWidget(scroll, 1)

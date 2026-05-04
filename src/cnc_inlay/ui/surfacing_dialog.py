@@ -165,9 +165,6 @@ class SurfacingDialog(QDialog):
         # --- Buttons ---
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
-        self._save_btn = QPushButton("Save G-code…")
-        self._save_btn.clicked.connect(self._on_save_clicked)
-        btn_row.addWidget(self._save_btn)
         self._run_btn = QPushButton("▶ Run on Machine")
         self._run_btn.setStyleSheet(
             "QPushButton { background: #f5a623; color: #1d1f24; "

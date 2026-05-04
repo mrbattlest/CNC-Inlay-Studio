@@ -630,17 +630,12 @@ class Canvas3D(gl.GLViewWidget):
     # -------------------------------------------------- machine / sim marker
 
     def set_sim_position(self, x: float, y: float, z: float) -> None:
-        """Subtle green 3-axis crosshair used during simulator playback.
-        Z is lifted by stock thickness to match the rendered toolpaths."""
-        self._clear(self._machine_marker_items)
-        z = z + self._z_lift()
-        size = 2.0
-        for dx, dy, dz in [(size, 0, 0), (0, size, 0), (0, 0, size)]:
-            pts = np.array(
-                [[x - dx, y - dy, z - dz], [x + dx, y + dy, z + dz]],
-                dtype=np.float32,
-            )
-            self._add_line(pts, _TRAVEL_RGBA, 3.0, self._machine_marker_items)
+        """Bit indicator used during simulator playback. Reuses the same
+        purple wireframe cone the live machine-position marker uses so
+        the simulator preview reads identically to a real cut. The bit
+        diameter defaults to 3 mm because the simulator doesn't carry
+        per-segment bit info — it's just a visual marker."""
+        self.set_machine_position(x, y, z, bit_diameter_mm=3.0)
 
     def set_machine_position(
         self, x: float, y: float, z: float, bit_diameter_mm: float = 3.0
