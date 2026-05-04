@@ -674,6 +674,10 @@ class MainWindow(QMainWindow):
         self._param_debounce.setInterval(80)
         self._param_debounce.timeout.connect(self._refresh_finished_canvas)
         self._param_debounce.timeout.connect(self._refresh_stock_outlines)
+        # Stock thickness / W/H changes need to update the 3D wood-block
+        # rendering too, otherwise the cuts visually plunge below the
+        # bed when the user hasn't measured stock yet.
+        self._param_debounce.timeout.connect(self._push_stock_blocks_to_canvases)
         self._controls.parametersChanged.connect(self._param_debounce.start)
         self._controls.designSizeChanged.connect(self._on_design_size_changed)
         self._controls.designSizeChanged.connect(lambda *_: self._mark_dirty())
@@ -777,6 +781,26 @@ class MainWindow(QMainWindow):
         self._plug_stack.setCurrentIndex(idx)
         self._plug_canvas3d._view_toggle.set_mode(mode, _emit=False)
         self._plug_canvas2d._view_toggle.set_mode(mode, _emit=False)
+
+    def _push_stock_blocks_to_canvases(self) -> None:
+        """Tell each 3D canvas its physical wood dimensions so it can
+        render the wood block sitting on the bed and lift toolpaths
+        accordingly. Pocket and plug canvases get their own side's
+        dimensions; if a stock dimension isn't set, the canvas falls
+        back to the design extent + pad."""
+        if self._design is None:
+            return
+        params = self._controls.current_params()
+        # Pocket-side wood: actual stock or fall back to design footprint.
+        p_w = params.pocket_stock_width_mm or self._design.width_mm
+        p_h = params.pocket_stock_height_mm or self._design.height_mm
+        p_t = params.pocket_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
+        self._pocket_canvas3d.set_stock_block(p_w, p_h, p_t)
+        # Plug-side wood: same idea.
+        l_w = params.plug_stock_width_mm or self._design.width_mm
+        l_h = params.plug_stock_height_mm or self._design.height_mm
+        l_t = params.plug_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
+        self._plug_canvas3d.set_stock_block(l_w, l_h, l_t)
 
     def _refresh_stock_outlines(self) -> None:
         """Re-render the dashed stock rectangles when the user edits W/H values
@@ -1690,6 +1714,11 @@ class MainWindow(QMainWindow):
             # back to the default orientation so the design is centred and
             # framed at the X+ right / Y+ away / 30° tilt convention.
             c.reset_view()
+        # Push the per-side wood-block dimensions so 3D rendering shows
+        # the wood as a 3D block sitting on the bed grid (with toolpaths
+        # cutting INTO the top), instead of toolpaths appearing to plunge
+        # below the bed.
+        self._push_stock_blocks_to_canvases()
         self._update_size_overlays(design, params)
         self._refresh_finished_canvas()
         self._controls.set_design_summary(
@@ -1717,6 +1746,7 @@ class MainWindow(QMainWindow):
             c.set_design(self._design.polygon)
         for c in self._all_3d_canvases():
             c.set_design(self._design.polygon, stock_depth_mm=stock_depth)
+        self._push_stock_blocks_to_canvases()
         self._update_size_overlays(self._design, params)
         self._refresh_finished_canvas()
         self._controls.set_summary("")
@@ -1736,6 +1766,7 @@ class MainWindow(QMainWindow):
             c.set_design(self._design.polygon)
         for c in self._all_3d_canvases():
             c.set_design(self._design.polygon, stock_depth_mm=stock_depth)
+        self._push_stock_blocks_to_canvases()
         self._update_size_overlays(self._design, params)
         self._refresh_finished_canvas()
         # Sidebar reflects the new width/height (they swapped) without

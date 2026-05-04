@@ -93,6 +93,17 @@ class Canvas3D(gl.GLViewWidget):
         ] = []
         self._extent: tuple[float, float] = (60.0, 60.0)
         self._stock_depth_mm: float = 5.0
+        # Physical stock thickness (the real wood). Drives where the
+        # wood-block wireframe sits and how high to lift toolpath chains
+        # so they appear to cut INTO the wood from the top, instead of
+        # plunging through the bed grid. Falls back to stock_depth_mm
+        # (= pocket_depth + glue_gap) if the host doesn't tell us the
+        # measured stock thickness.
+        self._stock_thickness_mm: float = 0.0
+        # Stock XY footprint for the wood-block wireframe. 0 = unknown,
+        # in which case the block defaults to the design extent + pad.
+        self._stock_footprint_w_mm: float = 0.0
+        self._stock_footprint_h_mm: float = 0.0
         self._vcarve_chains: list[Chain] = []
         self._pocket_chains: list[Chain] = []
         self._boundary_chains: list[Chain] = []
@@ -287,19 +298,22 @@ class Canvas3D(gl.GLViewWidget):
     def _redraw_polygon(self) -> None:
         # Plug toolpaths are cut from the mirrored design; mirror the outline
         # on the plug-side canvases so the outline sits on top of its toolpath.
+        # Outline is drawn at the TOP of the wood block (Z = stock_thickness)
+        # so it sits on the working surface rather than down at bed level.
         self._clear(self._design_items)
         if not self._poly_rings:
             return
         mirror = self._view_mode == "plug"
+        z_top = self._z_lift()
         for exterior, interiors in self._poly_rings:
             ext = np.array(
-                [(-x if mirror else x, y, 0.0) for x, y in exterior],
+                [(-x if mirror else x, y, z_top) for x, y in exterior],
                 dtype=np.float32,
             )
             self._add_line(ext, _SHAPE_RGBA, 1.6, self._design_items)
             for interior in interiors:
                 ring = np.array(
-                    [(-x if mirror else x, y, 0.0) for x, y in interior],
+                    [(-x if mirror else x, y, z_top) for x, y in interior],
                     dtype=np.float32,
                 )
                 self._add_line(ring, _SHAPE_RGBA, 1.4, self._design_items)
@@ -371,15 +385,61 @@ class Canvas3D(gl.GLViewWidget):
             self.addItem(t)
             self._bed_items.append(t)
 
+    def set_stock_block(
+        self, width_mm: float, height_mm: float, thickness_mm: float,
+    ) -> None:
+        """Tell the canvas the physical stock dimensions so it can render
+        the wood as a 3D block sitting on the bed grid (bottom at Z=0,
+        top at Z=+thickness) and lift the toolpath chains accordingly.
+        Called by the host when the user updates plug/pocket stock
+        thickness or when fresh design dimensions arrive."""
+        self._stock_footprint_w_mm = max(0.0, width_mm)
+        self._stock_footprint_h_mm = max(0.0, height_mm)
+        self._stock_thickness_mm = max(0.0, thickness_mm)
+        # Re-emit everything so the lift takes effect immediately.
+        self._redraw_polygon()
+        self._redraw_stock()
+        self._redraw_layer(self._vcarve_chains, self._vcarve_items, _VCARVE_RGBA)
+        self._redraw_layer(self._pocket_chains, self._pocket_items, _POCKET_CLEAR_RGBA)
+        self._redraw_layer(self._boundary_chains, self._boundary_items, _BOUNDARY_RGBA)
+
+    def _z_lift(self) -> float:
+        """How much to add to chain Z values for rendering, so cuts
+        appear to descend INTO the wood from the top instead of below
+        the bed grid. Equal to the stock thickness when set, else falls
+        back to the stock-depth so the cut floor sits on the bed (legacy
+        behaviour)."""
+        return self._stock_thickness_mm if self._stock_thickness_mm > 0 else 0.0
+
     def _redraw_stock(self) -> None:
         self._clear(self._stock_items)
-        w, h = self._extent
-        pad = max(w, h) * 0.05 + 2
-        x0, x1 = -w / 2 - pad, w / 2 + pad
-        y0, y1 = -h / 2 - pad, h / 2 + pad
-        z_top = 0.0
-        z_bot = -self._stock_depth_mm
+        # Wood block geometry. Use the physical stock footprint when set
+        # by the host; otherwise fall back to the design extent + pad
+        # (legacy behaviour for screens before the host wired up stock
+        # dimensions).
+        if self._stock_footprint_w_mm > 0 and self._stock_footprint_h_mm > 0:
+            x0 = -self._stock_footprint_w_mm / 2.0
+            x1 =  self._stock_footprint_w_mm / 2.0
+            y0 = -self._stock_footprint_h_mm / 2.0
+            y1 =  self._stock_footprint_h_mm / 2.0
+        else:
+            w, h = self._extent
+            pad = max(w, h) * 0.05 + 2
+            x0, x1 = -w / 2 - pad, w / 2 + pad
+            y0, y1 = -h / 2 - pad, h / 2 + pad
+        # Block extends from Z=0 (bottom = bed surface) up to
+        # Z=+thickness (top of wood). Toolpaths drawn elsewhere are
+        # lifted by _z_lift() so cuts descend INTO this block rather
+        # than appearing to plunge through the bed.
+        thickness = self._stock_thickness_mm if self._stock_thickness_mm > 0 else self._stock_depth_mm
+        z_bot = 0.0
+        z_top = thickness
 
+        # Brighter / thicker wireframe than the previous rendering so the
+        # block reads as a 3D object rather than a faint outline. Top
+        # face gets the most emphasis (it's the working surface).
+        top_color = (0.78, 0.62, 0.42, 1.0)   # warm wood-tone
+        body_color = (0.52, 0.42, 0.30, 0.85)
         top = np.array(
             [[x0, y0, z_top], [x1, y0, z_top], [x1, y1, z_top], [x0, y1, z_top], [x0, y0, z_top]],
             dtype=np.float32,
@@ -388,11 +448,11 @@ class Canvas3D(gl.GLViewWidget):
             [[x0, y0, z_bot], [x1, y0, z_bot], [x1, y1, z_bot], [x0, y1, z_bot], [x0, y0, z_bot]],
             dtype=np.float32,
         )
-        self._add_line(top, _STOCK_RGBA, 1.0, self._stock_items)
-        self._add_line(bot, _STOCK_RGBA, 1.0, self._stock_items)
+        self._add_line(top, top_color, 2.5, self._stock_items)
+        self._add_line(bot, body_color, 1.5, self._stock_items)
         for x, y in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]:
             pts = np.array([[x, y, z_top], [x, y, z_bot]], dtype=np.float32)
-            self._add_line(pts, _STOCK_RGBA, 1.0, self._stock_items)
+            self._add_line(pts, body_color, 1.5, self._stock_items)
 
     def _redraw_layer(
         self,
@@ -408,14 +468,23 @@ class Canvas3D(gl.GLViewWidget):
             self._clear(items)
         if not chains:
             return
+        # Lift all rendered Z values by the stock thickness so chains
+        # appear to descend INTO the wood block (whose top sits at
+        # +stock_thickness) instead of plunging through the bed grid at
+        # Z=0. The G-code itself is unchanged — this is a render-only
+        # offset so the visual matches what the bit physically does.
+        z_lift = self._z_lift()
+        safe_z = _SAFE_Z_MM + z_lift
         for chain in chains:
             if len(chain) < 2:
                 continue
-            pts = np.array([(x, y, z) for x, y, z in chain], dtype=np.float32)
+            pts = np.array([(x, y, z + z_lift) for x, y, z in chain], dtype=np.float32)
             self._add_line(pts, color, 2.0, items)
-            # Direction chevrons.
+            # Direction chevrons (chevron helper takes 3D points; lift
+            # those too so they sit on the chain rather than below it).
             for pt, direction in chevron_markers(chain):
-                tri = chevron_polyline_3d(pt, direction, size_mm=1.5)
+                lifted_pt = (pt[0], pt[1], pt[2] + z_lift) if len(pt) >= 3 else pt
+                tri = chevron_polyline_3d(lifted_pt, direction, size_mm=1.5)
                 arrow_pts = np.array(tri, dtype=np.float32)
                 self._add_line(arrow_pts, color, 2.5, items)
         # Travel moves: lift → traverse → plunge between consecutive chains.
@@ -426,10 +495,10 @@ class Canvas3D(gl.GLViewWidget):
             sx, sy, sz = nxt[0]
             travel = np.array(
                 [
-                    [ex, ey, ez],
-                    [ex, ey, _SAFE_Z_MM],
-                    [sx, sy, _SAFE_Z_MM],
-                    [sx, sy, sz],
+                    [ex, ey, ez + z_lift],
+                    [ex, ey, safe_z],
+                    [sx, sy, safe_z],
+                    [sx, sy, sz + z_lift],
                 ],
                 dtype=np.float32,
             )
@@ -561,8 +630,10 @@ class Canvas3D(gl.GLViewWidget):
     # -------------------------------------------------- machine / sim marker
 
     def set_sim_position(self, x: float, y: float, z: float) -> None:
-        """Subtle green 3-axis crosshair used during simulator playback."""
+        """Subtle green 3-axis crosshair used during simulator playback.
+        Z is lifted by stock thickness to match the rendered toolpaths."""
         self._clear(self._machine_marker_items)
+        z = z + self._z_lift()
         size = 2.0
         for dx, dy, dz in [(size, 0, 0), (0, size, 0), (0, 0, size)]:
             pts = np.array(
@@ -579,9 +650,12 @@ class Canvas3D(gl.GLViewWidget):
         The cone widens upward: the apex is exactly where GRBL says the bit
         tip is, the base sits ``cone_height`` above it. ``bit_diameter_mm``
         sets the cone's base radius so the cone is visually proportional to
-        the actual endmill.
+        the actual endmill. Z is lifted by stock thickness so the cone
+        descends INTO the wood block from above instead of from below
+        the bed grid.
         """
         self._clear(self._machine_marker_items)
+        z = z + self._z_lift()
         radius = max(0.6, bit_diameter_mm / 2.0)
         cone_height = max(8.0, radius * 12.0)
         base_z = z + cone_height
