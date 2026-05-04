@@ -789,9 +789,9 @@ class MainWindow(QMainWindow):
     def _push_stock_blocks_to_canvases(self) -> None:
         """Tell each 3D canvas its physical wood dimensions so it can
         render the wood block sitting on the bed and lift toolpaths
-        accordingly. Pocket and plug canvases get their own side's
-        dimensions; if a stock dimension isn't set, the canvas falls
-        back to the design extent + pad."""
+        accordingly. Pocket, plug, and surfacing canvases each get
+        their own dimensions; if a stock dimension isn't set, the
+        canvas falls back to the design extent + pad."""
         if self._design is None:
             return
         params = self._controls.current_params()
@@ -805,6 +805,13 @@ class MainWindow(QMainWindow):
         l_h = params.plug_stock_height_mm or self._design.height_mm
         l_t = params.plug_thickness_mm or (params.pocket_depth_mm + params.glue_gap_mm)
         self._plug_canvas3d.set_stock_block(l_w, l_h, l_t)
+        # Surfacing: combined assembled-panel block (pocket_thickness +
+        # glue_gap + plug_thickness). Footprint = pocket stock since the
+        # panel sits on the pocket-side wood. Without this, the
+        # Surfacing tab's wood block defaults to the small pocket-depth
+        # fallback and looks like just the plug stock.
+        s_t = max(0.5, p_t + params.glue_gap_mm + l_t)
+        self._surfacing_canvas3d.set_stock_block(p_w, p_h, s_t)
 
     def _refresh_stock_outlines(self) -> None:
         """Re-render the dashed stock rectangles when the user edits W/H values
