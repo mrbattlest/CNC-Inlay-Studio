@@ -17,13 +17,39 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
 
-from cnc_inlay.ai.image_generator import generate_silhouette_png
+from cnc_inlay.ai.image_generator import DetailLevel, generate_silhouette_png
 from cnc_inlay.ai.secrets_store import get_api_key, get_model
 from cnc_inlay.ai.vectorizer import png_to_svg
+from cnc_inlay.core.units import load_settings, save_settings
+
+_SETTINGS_KEY_DETAIL = "ai_detail_level"
+
+# Slider position → (DetailLevel, label, hint shown under the slider).
+# Hint pairs each level with the bit size we tuned its prompt for, so
+# the user can pick based on what they actually have in their collet.
+_DETAIL_LEVELS: list[tuple[DetailLevel, str, str]] = [
+    (
+        DetailLevel.SIMPLE,
+        "Simple",
+        "Bold, blocky silhouette · no internal cutouts · safe with any bit ≥3 mm.",
+    ),
+    (
+        DetailLevel.DETAILED,
+        "Detailed",
+        "Paper-cut style with a few internal cutouts · for 2–3 mm endmills.",
+    ),
+    (
+        DetailLevel.INTRICATE,
+        "Intricate",
+        "Ornate scherenschnitte with rich internal cutouts · for 1–1.5 mm endmills "
+        "(ideally with a V-bit pre-pass).",
+    ),
+]
 
 
 class _GenerateWorker(QObject):
@@ -31,15 +57,18 @@ class _GenerateWorker(QObject):
     finished = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, prompt: str, api_key: str) -> None:
+    def __init__(self, prompt: str, api_key: str, detail: DetailLevel) -> None:
         super().__init__()
         self._prompt = prompt
         self._api_key = api_key
+        self._detail = detail
 
     def run(self) -> None:
         try:
             self.progressed.emit("Asking Gemini for an image…")
-            png = generate_silhouette_png(self._prompt, api_key=self._api_key)
+            png = generate_silhouette_png(
+                self._prompt, api_key=self._api_key, detail=self._detail,
+            )
             self.progressed.emit("Tracing the silhouette into vectors…")
             svg = png_to_svg(png)
             self.finished.emit(svg)
@@ -80,8 +109,8 @@ class GenerateDialog(QDialog):
             "profile, leaves, geometric symbols, monograms, simple objects."
             "<br>"
             "<b>What doesn't:</b> scenes, multi-figure compositions, anything "
-            "with text or fine internal detail. The 1–3 mm endmill blurs "
-            "anything smaller than a few mm."
+            "with text. Match the <b>Detail</b> slider below to your finest "
+            "endmill — finer detail needs a finer bit."
         )
         intro.setTextFormat(Qt.RichText)
         intro.setWordWrap(True)
@@ -91,6 +120,43 @@ class GenerateDialog(QDialog):
         self.prompt_edit.setPlaceholderText("e.g. a butterfly")
         self.prompt_edit.returnPressed.connect(self._on_generate)
         layout.addWidget(self.prompt_edit)
+
+        # --- Detail slider --------------------------------------------------
+        # Three discrete positions mapping to DetailLevel. We use a slider
+        # rather than a combo so the user reads it as a continuous trade
+        # (chunky ↔ ornate) and remembers their position visually.
+        detail_row = QWidget()
+        detail_h = QHBoxLayout(detail_row)
+        detail_h.setContentsMargins(0, 6, 0, 0)
+        detail_h.setSpacing(8)
+        detail_h.addWidget(QLabel("Detail:"))
+        self.detail_slider = QSlider(Qt.Horizontal)
+        self.detail_slider.setRange(0, len(_DETAIL_LEVELS) - 1)
+        self.detail_slider.setSingleStep(1)
+        self.detail_slider.setPageStep(1)
+        self.detail_slider.setTickPosition(QSlider.TicksBelow)
+        self.detail_slider.setTickInterval(1)
+        self.detail_slider.setMinimumWidth(220)
+        # Restore last-used level (default = Detailed).
+        saved = (load_settings().get(_SETTINGS_KEY_DETAIL) or "").lower()
+        initial_idx = next(
+            (i for i, (lvl, _, _) in enumerate(_DETAIL_LEVELS)
+             if lvl.value == saved),
+            1,  # Detailed
+        )
+        self.detail_slider.setValue(initial_idx)
+        detail_h.addWidget(self.detail_slider, 1)
+        self.detail_label = QLabel(_DETAIL_LEVELS[initial_idx][1])
+        self.detail_label.setStyleSheet("font-weight: 600; color: #f5a623;")
+        self.detail_label.setMinimumWidth(70)
+        detail_h.addWidget(self.detail_label)
+        layout.addWidget(detail_row)
+
+        self.detail_hint = QLabel(_DETAIL_LEVELS[initial_idx][2])
+        self.detail_hint.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        self.detail_hint.setWordWrap(True)
+        layout.addWidget(self.detail_hint)
+        self.detail_slider.valueChanged.connect(self._on_detail_changed)
 
         examples_row = QWidget()
         ex_h = QHBoxLayout(examples_row)
@@ -153,10 +219,16 @@ class GenerateDialog(QDialog):
 
         self._set_busy(True)
 
+        detail = _DETAIL_LEVELS[self.detail_slider.value()][0]
+        # Persist the chosen level so the next dialog open remembers it.
+        data = load_settings()
+        data[_SETTINGS_KEY_DETAIL] = detail.value
+        save_settings(data)
+
         # Detach the QThread from the dialog so closing the dialog mid-request
         # can't destroy a still-running thread (Qt aborts the process if so).
         self._thread = QThread()
-        self._worker = _GenerateWorker(prompt, api_key)
+        self._worker = _GenerateWorker(prompt, api_key, detail)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progressed.connect(self._on_worker_progress)
@@ -166,6 +238,12 @@ class GenerateDialog(QDialog):
         self._worker.failed.connect(self._thread.quit)
         self._thread.finished.connect(self._cleanup_thread)
         self._thread.start()
+
+    def _on_detail_changed(self, idx: int) -> None:
+        idx = max(0, min(idx, len(_DETAIL_LEVELS) - 1))
+        _, label, hint = _DETAIL_LEVELS[idx]
+        self.detail_label.setText(label)
+        self.detail_hint.setText(hint)
 
     def _on_worker_progress(self, msg: str) -> None:
         self.status_label.setText(msg)
@@ -190,6 +268,7 @@ class GenerateDialog(QDialog):
 
     def _set_busy(self, busy: bool) -> None:
         self.prompt_edit.setEnabled(not busy)
+        self.detail_slider.setEnabled(not busy)
         self.generate_btn.setEnabled(not busy)
         # Cancel disabled while busy — there's no way to cancel an in-flight
         # Gemini call cleanly, and abandoning the worker thread would risk a
