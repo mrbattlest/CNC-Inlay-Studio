@@ -82,12 +82,19 @@ def pocket_offset_rings(
     bit_diameter_mm: float,
     step_over_frac: float = 0.5,
     max_passes: int = 200,
+    progress_cb: "Callable[[float, str], None] | None" = None,
 ) -> list[Polygon | MultiPolygon]:
     """Concentric inward offsets for endmill flat-bottom pocket clearing.
 
     First ring is offset by ``-bit_radius`` (so the bit's flute kisses the
     pocket wall); each subsequent ring steps further in by ``step_over``
     until the polygon empties.
+
+    ``progress_cb(fraction, msg)`` (optional) is invoked once per ring with
+    a 0..1 fraction estimated from the geometry's shorter bounding-box
+    dimension. The actual ring count isn't known upfront (we loop until the
+    polygon empties), so the fraction is a soft estimate — clamped to 0.99
+    until we actually finish so we never report ``done`` early.
     """
     if bit_diameter_mm <= 0:
         return []
@@ -95,6 +102,20 @@ def pocket_offset_rings(
     step_over = bit_diameter_mm * step_over_frac
     if step_over <= 0:
         return []
+
+    # Estimate how many rings we expect so we can report a meaningful 0..1
+    # fraction during the loop. Rings advance from the boundary inward by
+    # `step_over` each iteration, so a rough upper bound is the inradius —
+    # which we approximate by half the shorter side of the AABB. This will
+    # over-estimate for narrow non-rectangular shapes (so the bar moves a
+    # little fast at first) but never under-estimates by enough to cause a
+    # late-stage stall.
+    try:
+        minx, miny, maxx, maxy = geom.bounds
+        shorter_side = min(maxx - minx, maxy - miny)
+        est_rings = max(1, int(shorter_side / (2.0 * step_over)))
+    except Exception:
+        est_rings = 50  # generic fallback if bounds aren't available
 
     rings: list[Polygon | MultiPolygon] = []
     delta = -radius
@@ -105,6 +126,14 @@ def pocket_offset_rings(
         if ring is None or ring.is_empty:
             break
         rings.append(ring)
+        if progress_cb is not None:
+            # Cap fraction at 0.99 so we never claim done from inside the
+            # loop — the caller emits 1.0 when the loop terminates.
+            frac = min(0.99, (i + 1) / est_rings)
+            try:
+                progress_cb(frac, f"offset ring {i + 1}")
+            except Exception:
+                pass
     return rings
 
 

@@ -43,12 +43,17 @@ def compute_endmill_pocket_clear(
     endmill_diameter_mm: float,
     depth_mm: float,
     step_over_frac: float = 0.5,
+    progress_cb: "Callable[[float, str], None] | None" = None,
 ) -> list[Chain]:
     """Endmill flat-bottom clearing of an entire polygon (or MultiPolygon).
 
     Concentric inward offsets at ``step_over``, starting at ``-endmill_radius``
     so the bit's flute kisses the polygon boundary. Each resulting ring is
     emitted as a closed-loop chain at flat ``Z = -depth_mm``.
+
+    ``progress_cb(fraction, msg)`` (optional) is forwarded to
+    ``pocket_offset_rings`` so the caller can render smooth progress while
+    the (typically dozens to hundreds of) rings are computed.
 
     Used for both:
       - The pocket (clear the inside of the design polygon)
@@ -57,7 +62,9 @@ def compute_endmill_pocket_clear(
     if endmill_diameter_mm <= 0 or depth_mm <= 0:
         return []
     rings = pocket_offset_rings(
-        geom, endmill_diameter_mm, step_over_frac=step_over_frac
+        geom, endmill_diameter_mm,
+        step_over_frac=step_over_frac,
+        progress_cb=progress_cb,
     )
     if not rings:
         return []

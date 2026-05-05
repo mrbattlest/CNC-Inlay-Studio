@@ -1,16 +1,17 @@
-- AI Generate dialog's **Detail** slider now has 5 stops instead of 3,
-  so the slider behaves like an actual spectrum:
-    • **Bold** — chunky stencil, no internal cutouts (any bit ≥6 mm)
-    • **Simple** — clean stencil, 1–2 defining cutouts (3–4 mm endmills)
-    • **Detailed** — paper-cut style, several cutouts (2 mm endmills) ← default
-    • **Rich** — decorative paper-cut, many cutouts (1.5 mm endmills)
-    • **Ornate** — scherenschnitte/wood-block, ornate cutouts
-                   (1 mm endmills + V-bit pre-pass)
-  Each stop is now labelled directly under its tick mark, so the
-  available positions are visible at a glance and the active position
-  is highlighted in orange. Picking the matching stop for your finest
-  endmill gives the most usable result.
-- The underlying Gemini prompt was tuned per stop — minimum-feature
-  width steps from 8 % → 5 % → 3 % → 2 % → 1 % of the image width,
-  the internal-cutout policy steps from "none" → "ornate", and the
-  style anchor steps from "stencil" → "scherenschnitte / Beardsley".
+- Preview Toolpaths now reports progress smoothly instead of jumping
+  in big steps and stalling. Per-bit progress is broken into:
+    • residual computation (sub-step 0–10 %)
+    • offset rings (10–50 %, **now emits a tick per ring** instead of
+      sitting silent through dozens of rings — this was the long
+      "stuck at 25 %" gap the user saw on big designs)
+    • chain ordering (50–65 %)
+    • thin-residual cleanup (65–80 %, **now emits per residual piece**)
+    • toolpath optimisation (80–92 %)
+    • swept-area accounting (92–100 %)
+- Thin-residual cleanup is now multi-threaded across residual pieces.
+  AI-generated designs typically produce 10–50 disconnected residual
+  regions; the per-piece work (rasterise → skeletonise → extract
+  chains → simplify) is independent and the heavy compute steps drop
+  into numpy / skimage / shapely C code that releases the GIL, so
+  threading delivers real wall-clock speedup. Capped at 4 worker
+  threads to avoid oversubscribing the user's machine.
