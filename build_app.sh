@@ -174,6 +174,26 @@ fi
 # generation) transitively imports cryptography.hazmat.bindings._rust at
 # module-load time. Dropping it crashes the app at startup.
 
+# Pruning Qt frameworks left dangling symlinks in Contents/Resources/
+# (PySide6 mirrors every framework as a Resources/Foo → PySide6/Qt/lib/...
+# symlink). Gatekeeper's spctl rejects bundles with broken symlinks
+# ("invalid destination for symbolic link in bundle") even though
+# codesign is happy. Walk Resources/ and remove any symlink whose target
+# no longer exists.
+DANGLING_COUNT=0
+while IFS= read -r -d '' link; do
+    target="$(readlink "$link")"
+    case "$target" in
+        /*) abs_target="$target" ;;
+        *)  abs_target="$(dirname "$link")/$target" ;;
+    esac
+    if [[ ! -e "$abs_target" ]]; then
+        rm -f "$link"
+        DANGLING_COUNT=$((DANGLING_COUNT + 1))
+    fi
+done < <(find "$APP_BUNDLE/Contents" -type l -print0 2>/dev/null)
+echo "  • removed $DANGLING_COUNT dangling symlinks left by framework prune"
+
 NEW_SIZE=$(du -sh "$APP_BUNDLE" | awk '{print $1}')
 echo "✓ Pruned bundle size: $NEW_SIZE"
 

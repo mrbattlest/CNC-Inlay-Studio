@@ -437,8 +437,8 @@ mv "$BUNDLE" "$BACKUP" || {{
     notify_user "Couldn't replace the installed app — check Applications folder permissions. See installer.log"
     exit 1
 }}
-cp -R "$NEW_APP" "$BUNDLE" || {{
-    echo "ABORT: cp failed — restoring old bundle"
+ditto "$NEW_APP" "$BUNDLE" || {{
+    echo "ABORT: ditto failed — restoring old bundle"
     rm -rf "$BUNDLE" 2>/dev/null
     mv "$BACKUP" "$BUNDLE"
     hdiutil detach "$MOUNT_POINT" -quiet || true
@@ -447,8 +447,13 @@ cp -R "$NEW_APP" "$BUNDLE" || {{
 }}
 rm -rf "$BACKUP"
 
-# 5. Clear the quarantine attribute so Gatekeeper doesn't re-prompt.
-xattr -cr "$BUNDLE" 2>/dev/null || true
+# 5. Clear ONLY the quarantine attribute. Do NOT use `xattr -cr` here —
+# that strips every extended attribute including codesign-related
+# metadata, which breaks the notarisation seal. Gatekeeper then refuses
+# to launch the new app with "is damaged and can't be opened". We
+# target just the quarantine xattr so the codesign data survives intact
+# while still suppressing the "downloaded from internet" prompt.
+xattr -d com.apple.quarantine "$BUNDLE" 2>/dev/null || true
 
 # 6. Detach the DMG.
 hdiutil detach "$MOUNT_POINT" -quiet || true

@@ -152,11 +152,54 @@ if [[ "$NOTARY_STATUS" != "Accepted" ]]; then
 fi
 echo "✓ Notarisation accepted"
 
-step "Stapling notary ticket to DMG"
-xcrun stapler staple "$DMG_LOCAL"
-xcrun stapler validate "$DMG_LOCAL"
-spctl --assess --type open --context context:primary-signature --verbose "$DMG_LOCAL" 2>&1 | tail -3 || true
-echo "✓ Stapled"
+# Staple the .app FIRST (using the ticket Apple issued for the
+# DMG submission — notarisation tickets are keyed by CDHash, so the
+# .app inside is also notarised and stapler can fetch the ticket for
+# it from CloudKit). Without an .app staple, dragging the .app out of
+# the DMG to /Applications gives end users the "could not verify is
+# free of malware" error if their offline CloudKit lookup fails.
+step "Stapling notary ticket to .app bundle"
+APP_BUNDLE_LOCAL="dist/CNC Inlay Studio.app"
+xcrun stapler staple "$APP_BUNDLE_LOCAL"
+xcrun stapler validate "$APP_BUNDLE_LOCAL"
+echo "✓ Stapled .app"
+
+# Rebuild the DMG so it contains the now-stapled .app. The original
+# DMG was notarised, but its contents (the .app inside) had no embedded
+# ticket. Re-creating the DMG embeds the staple so drag-to-install
+# works offline. The new DMG file has a different hash, so we re-sign
+# it and re-staple — Apple's ticket database recognises everything in
+# the original submission, so stapling the new DMG also succeeds.
+step "Rebuilding DMG with stapled .app"
+rm -f "$DMG_LOCAL"
+TMP_DMG_DIR="$(mktemp -d)"
+trap "rm -rf '$TMP_DMG_DIR' '$NOTARY_OUT'" EXIT
+cp -R "$APP_BUNDLE_LOCAL" "$TMP_DMG_DIR/"
+ln -s /Applications "$TMP_DMG_DIR/Applications"
+hdiutil create \
+    -volname "CNC Inlay Studio" \
+    -srcfolder "$TMP_DMG_DIR" \
+    -ov -format UDZO \
+    "$DMG_LOCAL" >/dev/null
+codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$DMG_LOCAL"
+echo "✓ Rebuilt + signed DMG"
+
+# Try to staple the rebuilt DMG too. The rebuilt DMG has a different
+# hash than the one Apple notarised, so staple may fail with "Record
+# not found" — that's fine. The .app inside is fully stapled, which is
+# what matters for the drag-to-install flow we tell users to use. The
+# DMG itself just needs to be signed (which it is) so macOS will mount
+# it without complaint.
+step "Attempting to staple the rebuilt DMG (best-effort)"
+if xcrun stapler staple "$DMG_LOCAL" 2>&1 | tail -3; then
+    echo "✓ Stapled DMG"
+else
+    echo "ⓘ DMG staple unavailable (Apple's ticket DB doesn't yet know"
+    echo "  this rebuilt DMG's hash) — that's fine. The .app inside is"
+    echo "  stapled, so drag-to-install works offline."
+fi
+DMG_SIZE=$(du -h "$DMG_LOCAL" | awk '{print $1}')
+echo "✓ DMG ready ($DMG_SIZE)"
 
 # ── 3. Upload .dmg to R2 (versioned + "latest" alias) ─────────────────────
 # We upload two copies: the versioned one (for archival + the manifest's
