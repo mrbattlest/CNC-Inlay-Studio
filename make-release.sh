@@ -13,9 +13,15 @@
 # Requirements:
 #   * uv, sips, iconutil, hdiutil       (already required by build_app.sh)
 #   * wrangler                          (npm install -g wrangler  /  brew install wrangler)
+#   * Xcode command-line tools          (provides codesign, notarytool, stapler)
 #   * ~/.cloudflare/credentials  with two keys:
 #       accountID: <your account id>
 #       apiToken:  <Cloudflare API token with R2 Edit on tapawingo-app>
+#   * ~/.apple/credentials  with four keys:
+#       signingIdentity: Developer ID Application: <Name> (<TEAMID>)
+#       appleId:         <apple developer email>
+#       teamId:          <10-char Apple team id>
+#       appPassword:     <app-specific password from appleid.apple.com>
 #
 # Usage:
 #   ./make-release.sh <version> <release-notes-file>
@@ -35,6 +41,7 @@ R2_BUCKET="tapawingo-app"
 R2_PREFIX="cnc-inlay-studio"
 R2_PUBLIC_URL="https://pub-2f6bb3641a7848fdb6d18a515f004ea6.r2.dev"
 CREDENTIALS_FILE="$HOME/.cloudflare/credentials"
+APPLE_CRED_FILE="$HOME/.apple/credentials"
 
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -58,6 +65,18 @@ CLOUDFLARE_API_TOKEN=$(awk  -F': *' '/^apiToken:/{print  $2}' "$CREDENTIALS_FILE
 [[ -n "$CLOUDFLARE_ACCOUNT_ID" && -n "$CLOUDFLARE_API_TOKEN" ]] || \
     fail "Could not parse accountID / apiToken from $CREDENTIALS_FILE."
 export CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN
+
+# Apple credentials (required for release builds — without notarisation,
+# end users see Gatekeeper's malware warning).
+[[ -f "$APPLE_CRED_FILE" ]] || \
+    fail "Missing $APPLE_CRED_FILE. Create it with 'signingIdentity:', 'appleId:', 'teamId:', 'appPassword:' lines."
+# sed (not awk) because signingIdentity's value contains a colon.
+SIGNING_IDENTITY=$(sed -n 's/^signingIdentity: *//p' "$APPLE_CRED_FILE")
+APPLE_ID=$(          sed -n 's/^appleId: *//p'         "$APPLE_CRED_FILE")
+APPLE_TEAM_ID=$(     sed -n 's/^teamId: *//p'          "$APPLE_CRED_FILE")
+APPLE_APP_PASSWORD=$(sed -n 's/^appPassword: *//p'     "$APPLE_CRED_FILE")
+[[ -n "$SIGNING_IDENTITY" && -n "$APPLE_ID" && -n "$APPLE_TEAM_ID" && -n "$APPLE_APP_PASSWORD" ]] || \
+    fail "Could not parse all four keys (signingIdentity, appleId, teamId, appPassword) from $APPLE_CRED_FILE."
 
 # Read release notes (or empty body if none provided).
 if [[ -n "$NOTES_FILE" ]]; then
@@ -99,6 +118,45 @@ DMG_LOCAL="dist/CNC Inlay Studio.dmg"
 [[ -f "$DMG_LOCAL" ]] || fail "Expected $DMG_LOCAL after build."
 DMG_SIZE=$(du -h "$DMG_LOCAL" | awk '{print $1}')
 echo "✓ DMG built: $DMG_SIZE"
+
+# ── 2.5. Notarise + staple the DMG ─────────────────────────────────────────
+# Submits the signed DMG to Apple's notary service, polls until done,
+# then staples the resulting ticket so first-launch works offline.
+# Without this step, Gatekeeper still shows the malware warning even
+# when the bundle is correctly Developer-ID-signed.
+#
+# notarytool exits 0 even when the submission is rejected (status:
+# Invalid), so we capture the output and inspect status ourselves —
+# bailing out with the Apple log fetched if rejected.
+step "Submitting DMG to Apple notary service (this can take 1–10 minutes)"
+NOTARY_OUT=$(mktemp -t notary).log
+trap "rm -f '$NOTARY_OUT'" EXIT
+xcrun notarytool submit "$DMG_LOCAL" \
+    --apple-id "$APPLE_ID" \
+    --team-id "$APPLE_TEAM_ID" \
+    --password "$APPLE_APP_PASSWORD" \
+    --wait 2>&1 | tee "$NOTARY_OUT"
+
+NOTARY_ID=$(grep -m1 '^  id:' "$NOTARY_OUT" | awk '{print $2}')
+NOTARY_STATUS=$(grep -m1 '^  status:' "$NOTARY_OUT" | awk '{print $2}')
+
+if [[ "$NOTARY_STATUS" != "Accepted" ]]; then
+    echo
+    echo "✗ Notarisation status: $NOTARY_STATUS (id $NOTARY_ID)"
+    echo "  Fetching Apple's rejection log..."
+    xcrun notarytool log "$NOTARY_ID" \
+        --apple-id "$APPLE_ID" \
+        --team-id "$APPLE_TEAM_ID" \
+        --password "$APPLE_APP_PASSWORD"
+    fail "Notarisation rejected — see log above and fix before retrying."
+fi
+echo "✓ Notarisation accepted"
+
+step "Stapling notary ticket to DMG"
+xcrun stapler staple "$DMG_LOCAL"
+xcrun stapler validate "$DMG_LOCAL"
+spctl --assess --type open --context context:primary-signature --verbose "$DMG_LOCAL" 2>&1 | tail -3 || true
+echo "✓ Stapled"
 
 # ── 3. Upload .dmg to R2 (versioned + "latest" alias) ─────────────────────
 # We upload two copies: the versioned one (for archival + the manifest's

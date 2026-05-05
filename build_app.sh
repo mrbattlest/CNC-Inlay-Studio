@@ -126,6 +126,34 @@ if [[ -d "$QT_LIB_DIR" ]]; then
     done
 fi
 [[ -d "$QT_QML_DIR" ]] && rm -rf "$QT_QML_DIR"
+# Drop Qt's bundled developer tools — end users never touch them and
+# they're nested .app bundles + standalone binaries which would each
+# need their own codesign pass (notarisation rejects them otherwise).
+# PyInstaller drops .app copies in two places (Frameworks/ + Resources/)
+# so we wipe both. The standalone CLI tools (balsam, lupdate, etc.) are
+# used for translations / QML / Quick3D — none of which we ship.
+for d in \
+    "$PYSIDE_PKG_DIR/Assistant__dot__app" \
+    "$PYSIDE_PKG_DIR/Designer__dot__app" \
+    "$PYSIDE_PKG_DIR/Linguist__dot__app" \
+    "$APP_BUNDLE/Contents/Resources/PySide6/Assistant.app" \
+    "$APP_BUNDLE/Contents/Resources/PySide6/Designer.app" \
+    "$APP_BUNDLE/Contents/Resources/PySide6/Linguist.app"; do
+    [[ -e "$d" ]] && rm -rf "$d"
+done
+for f in \
+    "$PYSIDE_PKG_DIR/balsam" \
+    "$PYSIDE_PKG_DIR/balsamui" \
+    "$PYSIDE_PKG_DIR/lupdate" \
+    "$PYSIDE_PKG_DIR/lrelease" \
+    "$PYSIDE_PKG_DIR/qmlformat" \
+    "$PYSIDE_PKG_DIR/qmllint" \
+    "$PYSIDE_PKG_DIR/qmlls" \
+    "$PYSIDE_PKG_DIR/qsb" \
+    "$PYSIDE_PKG_DIR/svgtoqml"; do
+    [[ -e "$f" ]] && rm -f "$f"
+done
+
 if [[ -d "$QT_PLUGINS_DIR" ]]; then
     rm -rf "$QT_PLUGINS_DIR/qmltooling" \
            "$QT_PLUGINS_DIR/scenegraph" \
@@ -149,6 +177,80 @@ fi
 NEW_SIZE=$(du -sh "$APP_BUNDLE" | awk '{print $1}')
 echo "✓ Pruned bundle size: $NEW_SIZE"
 
+# ── 3.6. Code-sign with Developer ID (if credentials present) ──────────────
+# Reads ~/.apple/credentials for `signingIdentity:` and signs the .app
+# inside-out (frameworks → dylibs/sos → bundle root). Without a valid
+# Developer ID signature + notarisation (handled by make-release.sh),
+# end users see Gatekeeper's "cannot verify it's free of malware" alert.
+#
+# Local builds without ~/.apple/credentials skip signing — useful for
+# fast iteration; the resulting .app is just unsigned (same as before).
+APPLE_CRED_FILE="$HOME/.apple/credentials"
+SIGNING_IDENTITY=""
+if [[ -f "$APPLE_CRED_FILE" ]]; then
+    # Value is everything after the first "key: " — sed (not awk -F)
+    # because the signing identity itself contains a colon
+    # ("Developer ID Application: Malcolm Ross (TEAMID)").
+    SIGNING_IDENTITY=$(sed -n 's/^signingIdentity: *//p' "$APPLE_CRED_FILE")
+fi
+ENTITLEMENTS="$PROJECT_ROOT/assets/entitlements.plist"
+
+if [[ -n "$SIGNING_IDENTITY" ]]; then
+    step "Signing bundle with Developer ID: $SIGNING_IDENTITY"
+    [[ -f "$ENTITLEMENTS" ]] || fail "Missing $ENTITLEMENTS"
+
+    # 1) Sign every embedded framework (Qt*.framework, Python.framework)
+    #    inside-out — frameworks must be signed before the parent bundle.
+    while IFS= read -r -d '' fw; do
+        codesign --force --timestamp --options runtime \
+            --sign "$SIGNING_IDENTITY" "$fw" 2>/dev/null || \
+            codesign --force --timestamp --options runtime \
+                --sign "$SIGNING_IDENTITY" "$fw"
+    done < <(find "$APP_BUNDLE/Contents" -type d -name "*.framework" -print0)
+
+    # 2) Sign every nested Mach-O binary. We detect by file content
+    #    (`file -b` says "Mach-O ...") rather than just .dylib/.so —
+    #    PyInstaller bundles extension-less standalone binaries
+    #    (e.g. the Python interpreter, Qt CLI tools) that we'd
+    #    otherwise miss and fail notarisation on. Skip files already
+    #    signed inside frameworks (codesign --force re-signs them
+    #    cleanly anyway, but this is faster and avoids touching
+    #    framework Versions/Current internals out of order).
+    SIGN_COUNT=0
+    while IFS= read -r -d '' f; do
+        # Skip anything inside a .framework — those were signed in step 1.
+        case "$f" in *.framework/*) continue ;; esac
+        head_bytes=$(file -b "$f")
+        case "$head_bytes" in
+            Mach-O*)
+                codesign --force --timestamp --options runtime \
+                    --sign "$SIGNING_IDENTITY" "$f" >/dev/null
+                SIGN_COUNT=$((SIGN_COUNT + 1))
+                ;;
+        esac
+    done < <(find "$APP_BUNDLE/Contents" -type f -print0)
+    echo "  • signed $SIGN_COUNT nested binaries"
+
+    # 3) Sign the main bundle with hardened runtime + entitlements.
+    codesign --force --timestamp --options runtime \
+        --entitlements "$ENTITLEMENTS" \
+        --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
+
+    # 4) Verify — `codesign -vvv --deep` walks every nested binary and
+    #    catches the most common notarisation rejections (unsigned
+    #    nested binaries, missing hardened runtime). We don't use
+    #    `--verify --deep --strict` because it has a path-handling
+    #    bug on bundles this large with spaces in the path that
+    #    spuriously reports "No such file or directory".
+    if codesign -vvv --deep "$APP_BUNDLE" 2>&1 | tail -2; then
+        echo "✓ Signed $APP_BUNDLE"
+    else
+        fail "Signature verification failed — won't pass notarisation."
+    fi
+else
+    echo "ⓘ ~/.apple/credentials not found — skipping signing (local dev build)."
+fi
+
 # ── 4. Build the DMG ──────────────────────────────────────────────────────
 step "Packaging $DMG_PATH"
 rm -f "$DMG_PATH"
@@ -165,6 +267,13 @@ hdiutil create \
     -ov -format UDZO \
     "$DMG_PATH" >/dev/null
 
+# Sign the DMG too if we have an identity — required so notarytool will
+# accept it and so the staple step has something to bind the ticket to.
+if [[ -n "$SIGNING_IDENTITY" ]]; then
+    codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$DMG_PATH"
+    echo "✓ Signed DMG"
+fi
+
 echo "✓ Wrote $DMG_PATH"
 
 # ── 5. Done ───────────────────────────────────────────────────────────────
@@ -178,8 +287,9 @@ To install:
   • Drag CNC Inlay Studio.app to the Applications folder shortcut
   • Eject the volume
 
-The first time you launch the app, macOS Gatekeeper will block it because it
-isn't signed. Either:
+If this build was signed (~/.apple/credentials present) and notarised
+(via make-release.sh), Gatekeeper will let it run on first launch.
+Local unsigned builds need a one-time bypass:
   • Right-click the .app in Finder → Open → Open anyway, OR
   • Run once: xattr -cr "/Applications/CNC Inlay Studio.app"
 

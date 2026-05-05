@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Python uses ctypes / cffi which Apple's hardened runtime sees
+         as unsigned executable memory. Required for PyInstaller +
+         cryptography (transitive dep of google-genai). -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- PyInstaller bundles Qt frameworks + many .dylibs under
+         Contents/Frameworks/. They're signed with our Developer ID,
+         not Apple's, so library validation must be relaxed. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- Allow loading of dylibs at non-standard paths inside the bundle
+         (PySide6 puts Qt frameworks under PySide6/Qt/lib/, not the
+         standard Contents/Frameworks/). -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>
