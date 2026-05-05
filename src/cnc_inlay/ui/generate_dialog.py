@@ -29,25 +29,36 @@ from cnc_inlay.core.units import load_settings, save_settings
 
 _SETTINGS_KEY_DETAIL = "ai_detail_level"
 
-# Slider position → (DetailLevel, label, hint shown under the slider).
-# Hint pairs each level with the bit size we tuned its prompt for, so
-# the user can pick based on what they actually have in their collet.
+# Slider position → (DetailLevel, short tick label, full hint).
+# Five distinct stops so the slider reads as a real spectrum (not three
+# disguised radio buttons) and each step represents a meaningful change
+# in both the prompt and the matching CNC bit size.
 _DETAIL_LEVELS: list[tuple[DetailLevel, str, str]] = [
+    (
+        DetailLevel.BOLD,
+        "Bold",
+        "Chunky stencil · no internal cutouts · safe with any bit ≥6 mm.",
+    ),
     (
         DetailLevel.SIMPLE,
         "Simple",
-        "Bold, blocky silhouette · no internal cutouts · safe with any bit ≥3 mm.",
+        "Clean stencil · 1–2 defining cutouts · for 3–4 mm endmills.",
     ),
     (
         DetailLevel.DETAILED,
         "Detailed",
-        "Paper-cut style with a few internal cutouts · for 2–3 mm endmills.",
+        "Paper-cut style · several cutouts for character · for 2 mm endmills.",
     ),
     (
-        DetailLevel.INTRICATE,
-        "Intricate",
-        "Ornate scherenschnitte with rich internal cutouts · for 1–1.5 mm endmills "
-        "(ideally with a V-bit pre-pass).",
+        DetailLevel.RICH,
+        "Rich",
+        "Decorative paper-cut · many internal cutouts · for 1.5 mm endmills.",
+    ),
+    (
+        DetailLevel.ORNATE,
+        "Ornate",
+        "Scherenschnitte / wood-block · ornate internal cutouts · "
+        "for 1 mm endmills with a V-bit pre-pass.",
     ),
 ]
 
@@ -122,41 +133,60 @@ class GenerateDialog(QDialog):
         layout.addWidget(self.prompt_edit)
 
         # --- Detail slider --------------------------------------------------
-        # Three discrete positions mapping to DetailLevel. We use a slider
-        # rather than a combo so the user reads it as a continuous trade
-        # (chunky ↔ ornate) and remembers their position visually.
-        detail_row = QWidget()
-        detail_h = QHBoxLayout(detail_row)
-        detail_h.setContentsMargins(0, 6, 0, 0)
-        detail_h.setSpacing(8)
-        detail_h.addWidget(QLabel("Detail:"))
+        # Five discrete stops. We expose them as a slider with visible tick
+        # labels so the user reads it as a spectrum and can see exactly how
+        # many positions exist before they move it. Each tick maps 1:1 to a
+        # DetailLevel; intermediate values aren't possible because the
+        # underlying prompt is per-stop.
+        layout.addWidget(QLabel("Detail:"))
+
+        # Restore last-used level. Default = Detailed (index 2 of 5).
+        saved = (load_settings().get(_SETTINGS_KEY_DETAIL) or "").lower()
+        initial_idx = next(
+            (i for i, (lvl, _, _) in enumerate(_DETAIL_LEVELS)
+             if lvl.value == saved),
+            2,  # Detailed
+        )
+
         self.detail_slider = QSlider(Qt.Horizontal)
         self.detail_slider.setRange(0, len(_DETAIL_LEVELS) - 1)
         self.detail_slider.setSingleStep(1)
         self.detail_slider.setPageStep(1)
         self.detail_slider.setTickPosition(QSlider.TicksBelow)
         self.detail_slider.setTickInterval(1)
-        self.detail_slider.setMinimumWidth(220)
-        # Restore last-used level (default = Detailed).
-        saved = (load_settings().get(_SETTINGS_KEY_DETAIL) or "").lower()
-        initial_idx = next(
-            (i for i, (lvl, _, _) in enumerate(_DETAIL_LEVELS)
-             if lvl.value == saved),
-            1,  # Detailed
-        )
         self.detail_slider.setValue(initial_idx)
-        detail_h.addWidget(self.detail_slider, 1)
-        self.detail_label = QLabel(_DETAIL_LEVELS[initial_idx][1])
-        self.detail_label.setStyleSheet("font-weight: 600; color: #f5a623;")
-        self.detail_label.setMinimumWidth(70)
-        detail_h.addWidget(self.detail_label)
-        layout.addWidget(detail_row)
+        layout.addWidget(self.detail_slider)
+
+        # Per-tick labels underneath. Each one sits in an evenly-stretched
+        # row cell so it lines up roughly with its tick. The active label
+        # gets the orange accent so the user sees the current position
+        # without having to read the slider thumb's pixel x.
+        ticks_row = QWidget()
+        ticks_h = QHBoxLayout(ticks_row)
+        ticks_h.setContentsMargins(0, 0, 0, 0)
+        ticks_h.setSpacing(0)
+        self._tick_labels: list[QLabel] = []
+        for i, (_lvl, name, _hint) in enumerate(_DETAIL_LEVELS):
+            cell = QLabel(name)
+            cell.setAlignment(
+                Qt.AlignLeft if i == 0
+                else Qt.AlignRight if i == len(_DETAIL_LEVELS) - 1
+                else Qt.AlignHCenter
+            )
+            cell.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+            ticks_h.addWidget(cell, 1)
+            self._tick_labels.append(cell)
+        layout.addWidget(ticks_row)
 
         self.detail_hint = QLabel(_DETAIL_LEVELS[initial_idx][2])
-        self.detail_hint.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        self.detail_hint.setStyleSheet(
+            "color: #9aa0a6; font-size: 11px; padding-top: 2px;"
+        )
         self.detail_hint.setWordWrap(True)
         layout.addWidget(self.detail_hint)
         self.detail_slider.valueChanged.connect(self._on_detail_changed)
+        # Apply the initial highlight to the active tick label.
+        self._on_detail_changed(initial_idx)
 
         examples_row = QWidget()
         ex_h = QHBoxLayout(examples_row)
@@ -241,9 +271,15 @@ class GenerateDialog(QDialog):
 
     def _on_detail_changed(self, idx: int) -> None:
         idx = max(0, min(idx, len(_DETAIL_LEVELS) - 1))
-        _, label, hint = _DETAIL_LEVELS[idx]
-        self.detail_label.setText(label)
+        _, _name, hint = _DETAIL_LEVELS[idx]
         self.detail_hint.setText(hint)
+        for i, lbl in enumerate(self._tick_labels):
+            if i == idx:
+                lbl.setStyleSheet(
+                    "color: #f5a623; font-size: 11px; font-weight: 600;"
+                )
+            else:
+                lbl.setStyleSheet("color: #9aa0a6; font-size: 11px;")
 
     def _on_worker_progress(self, msg: str) -> None:
         self.status_label.setText(msg)
