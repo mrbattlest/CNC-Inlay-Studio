@@ -264,6 +264,12 @@ class MainWindow(QMainWindow):
         # read_svg_content() couldn't find the file, and svg_content got
         # written as None — losing the design forever.
         self._design_svg_text: str | None = None
+        # Number of 90°-clockwise rotations the user has applied to the
+        # design via the Rotate 90° button. Persisted to the project
+        # file (v8+) so the rotation survives close/reopen — older code
+        # stored the rotated W×H but reloaded the SVG at its native
+        # orientation, then rescale() squished it to the wrong aspect.
+        self._design_rotation_quarters: int = 0
         self._units: Units = get_saved_units()
         self._current_project_path: Path | None = None
         # True when there are unsaved changes (design loaded, controls
@@ -967,6 +973,7 @@ class MainWindow(QMainWindow):
             cache_signature=cache_signature,
             view_orientation=view_orientation,
             surfacing_settings=self._surfacing_settings,
+            design_rotation_quarters=self._design_rotation_quarters,
         )
 
     def _on_save_project(self) -> bool:
@@ -1281,6 +1288,43 @@ class MainWindow(QMainWindow):
                 self._controls.set_design_summary(
                     original_name, self._design.width_mm, self._design.height_mm
                 )
+            # Apply the saved 90° rotation BEFORE rescaling. v8+ files
+            # store the count explicitly; v7- files don't, so we infer
+            # one quarter-turn when the saved aspect ratio is closer to
+            # the SVG-rotated-90 aspect than to the SVG-natural aspect
+            # (catches projects that were rotated before persistence
+            # existed — like JMU 200x75 90 degrees.inlay where the SVG
+            # is 200×75 landscape but design_width/_height saves it as
+            # ~36×110 portrait, off by exactly one rotation).
+            quarters = int(getattr(project, "design_rotation_quarters", 0) or 0) % 4
+            if quarters == 0 and project.version <= 7:
+                if (
+                    project.design_width_mm is not None
+                    and project.design_height_mm is not None
+                    and project.design_width_mm > 0
+                    and project.design_height_mm > 0
+                    and self._design.width_mm > 0
+                    and self._design.height_mm > 0
+                ):
+                    saved_landscape = project.design_width_mm > project.design_height_mm
+                    svg_landscape = self._design.width_mm > self._design.height_mm
+                    if saved_landscape != svg_landscape:
+                        # Aspect orientation flipped → user must have
+                        # rotated 90°. Default to one CW turn.
+                        quarters = 1
+            self._design_rotation_quarters = quarters
+            for _ in range(quarters):
+                self._design.rotate_90_clockwise()
+            if quarters:
+                # Push the rotated polygon into all canvases so the
+                # rescale below operates on the rotated design.
+                params = self._controls.current_params()
+                stock_depth = params.pocket_depth_mm + params.glue_gap_mm
+                for c in self._all_2d_canvases():
+                    c.set_design(self._design.polygon)
+                for c in self._all_3d_canvases():
+                    c.set_design(self._design.polygon, stock_depth_mm=stock_depth)
+
             # Apply the saved inlay dimensions, if present. _load_design parses
             # the SVG natively-sized; this is what restores the user's resize.
             if (
@@ -1930,6 +1974,9 @@ class MainWindow(QMainWindow):
             )
 
         self._design = design
+        # Fresh design load resets rotation. Project-load path overrides
+        # this back to the saved value before applying the rotation.
+        self._design_rotation_quarters = 0
         self._result = None
         params = self._controls.current_params()
         stock_depth = params.pocket_depth_mm + params.glue_gap_mm
@@ -1986,6 +2033,7 @@ class MainWindow(QMainWindow):
         if self._design is None:
             return
         self._design.rotate_90_clockwise()
+        self._design_rotation_quarters = (self._design_rotation_quarters + 1) % 4
         self._result = None
         params = self._controls.current_params()
         stock_depth = params.pocket_depth_mm + params.glue_gap_mm

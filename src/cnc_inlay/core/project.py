@@ -23,7 +23,7 @@ from cnc_inlay.core.job import BitSpeedOverride, InlayParams, Origin
 from cnc_inlay.core.units import Units
 
 
-PROJECT_VERSION = 7  # v7 added cached pipeline result (avoid re-running on open)
+PROJECT_VERSION = 8  # v8 added design_rotation_quarters (90° rotation persistence)
 
 
 @dataclass
@@ -66,6 +66,13 @@ class ProjectFile:
     # depth_to_remove, combined_z, rpm, feed, pass_depth). None on
     # legacy files / projects that have never had surfacing saved.
     surfacing_settings: dict | None = None
+    # Number of 90°-clockwise rotations applied to the design via the
+    # Rotate 90° button. Persisted (v8+) so the rotated design isn't
+    # reverted on reload — older files (v7-) silently lost the rotation
+    # because design_width_mm/_height_mm were saved post-rotation but
+    # the SVG itself was reloaded in its natural orientation, then
+    # rescale() squished it to the wrong aspect.
+    design_rotation_quarters: int = 0
 
 
 def _params_to_dict(p: InlayParams) -> dict:
@@ -183,6 +190,7 @@ def save_project(path: str | Path, project: ProjectFile) -> None:
         "cache_signature": project.cache_signature,
         "view_orientation": project.view_orientation,
         "surfacing_settings": project.surfacing_settings,
+        "design_rotation_quarters": int(project.design_rotation_quarters) % 4,
     }
     Path(path).write_text(json.dumps(data, indent=2))
 
@@ -216,6 +224,7 @@ def load_project(path: str | Path) -> ProjectFile:
         cache_signature=data.get("cache_signature"),
         view_orientation=data.get("view_orientation"),
         surfacing_settings=data.get("surfacing_settings"),
+        design_rotation_quarters=int(data.get("design_rotation_quarters", 0) or 0) % 4,
     )
     # v5 → v6: any global speed override gets attached to the saved finishing
     # bit so the user's prior tuning carries forward into the new per-bit
