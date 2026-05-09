@@ -111,13 +111,21 @@ class MachineWorker(QObject):
     def open_port(self, port: str) -> None:
         if self._serial is not None and self._serial.is_open:
             return
+        # Open the per-session run log BEFORE the port — we want the
+        # port-open attempt itself recorded so failures are diagnosable.
+        from cnc_inlay.control import run_log
+        log_path = run_log.open_session()
+        run_log.log_user(f"Connect {port}")
         try:
             io = SerialIO(port)
             io.open()
         except Exception as exc:
+            run_log.log_error(f"open_port failed: {exc}")
             self.workerError.emit(f"Failed to open {port}: {exc}")
             return
         self._serial = io
+        if log_path is not None:
+            run_log.log_event(f"port opened: {port}")
 
         # Read loop — polls the serial buffer at 30 Hz.
         self._read_timer = QTimer(self)
@@ -155,24 +163,33 @@ class MachineWorker(QObject):
             self._serial.close()
             self._serial = None
         self._cached_wco = None
+        from cnc_inlay.control import run_log
+        run_log.log_user("Disconnect")
+        run_log.close_session()
         self.portClosed.emit("user")
 
     @Slot(str)
     def write_line(self, line: str) -> None:
         if self._serial is None:
             return
+        from cnc_inlay.control import run_log
+        run_log.log_tx(line)
         try:
             self._serial.write_line(line)
         except Exception as exc:
+            run_log.log_error(f"write_line failed: {exc}")
             self.workerError.emit(f"Write failed: {exc}")
 
     @Slot(bytes)
     def write_realtime(self, data: bytes) -> None:
         if self._serial is None:
             return
+        from cnc_inlay.control import run_log
+        run_log.log_tx_realtime(data)
         try:
             self._serial.write(data)
         except Exception as exc:
+            run_log.log_error(f"write_realtime failed: {exc}")
             self.workerError.emit(f"Realtime write failed: {exc}")
 
     # --------------------------------------------------------- streaming slots
@@ -246,6 +263,8 @@ class MachineWorker(QObject):
             self._checkpoint_timer = None
         self._streamer = None
         self._pending_tool_change_bit = None
+        from cnc_inlay.control import run_log
+        run_log.log_event(f"stream stopped: {reason}")
         # Keep the checkpoint on disk after an abort/error so the user can
         # recover. Only clear on clean completion.
         self.streamAborted.emit(reason)
@@ -287,8 +306,21 @@ class MachineWorker(QObject):
     def _stream_tick(self) -> None:
         if self._streamer is None or self._serial is None:
             return
+        from cnc_inlay.control import run_log
         cursor_before = self._streamer.cursor
-        self._streamer.feed(self._serial.write)
+
+        # Wrap the write function so every streamed line lands in the
+        # run log too — the streamer calls serial.write directly with
+        # the raw bytes, bypassing our write_line slot, so without
+        # this wrapper streamed G-code would be invisible to the log.
+        def _logging_write(payload: bytes) -> None:
+            try:
+                run_log.log_tx(payload.decode("ascii", errors="replace"))
+            except Exception:
+                pass
+            self._serial.write(payload)
+
+        self._streamer.feed(_logging_write)
         cursor_after = self._streamer.cursor
         # Detect tool changes: any newly-sent line whose index is in the
         # streamer's tool_change_at map means there's an M0 in flight for
@@ -312,6 +344,7 @@ class MachineWorker(QObject):
             self._checkpoint = None
             self._pending_tool_change_bit = None
             clear_checkpoint()  # clean completion — no need to recover
+            run_log.log_event("stream completed")
             self.streamCompleted.emit()
 
     def _save_checkpoint_tick(self) -> None:
@@ -328,10 +361,16 @@ class MachineWorker(QObject):
     def _tick_read(self) -> None:
         if self._serial is None:
             return
+        from cnc_inlay.control import run_log
         for _ in range(64):  # cap iterations to avoid starving the event loop
             line = self._serial.read_line()
             if not line:
                 break
+            # Status reports (5 Hz polling) would flood the log — skip
+            # them. Anything else (ok / error / ALARM / [MSG:] / setting
+            # responses / welcome banners) is interesting.
+            if not (line.startswith("<") and line.endswith(">")):
+                run_log.log_rx(line)
             if line.startswith("<") and line.endswith(">"):
                 status = parse_status(line)
                 if status is not None:
@@ -502,33 +541,51 @@ class MachineController(QObject):
         self._close_requested.emit()
 
     def jog(self, axis: str, distance_mm: float, feed_mm_min: float = 1000) -> None:
+        from cnc_inlay.control import run_log
+        run_log.log_user(f"Jog {axis}{distance_mm:+g} mm @ {feed_mm_min:g} mm/min")
         self._send_line.emit(cmd_jog(axis, distance_mm, feed_mm_min))
 
     def set_work_zero_all(self) -> None:
+        from cnc_inlay.control import run_log
+        run_log.log_user("Set work zero (XYZ)")
         self._send_line.emit(cmd_set_work_zero_all())
 
     def set_work_zero_xy(self) -> None:
+        from cnc_inlay.control import run_log
+        run_log.log_user("Set work zero (XY)")
         self._send_line.emit(cmd_set_work_zero_xy())
 
     def set_work_zero_z(self) -> None:
+        from cnc_inlay.control import run_log
+        run_log.log_user("Set work zero (Z)")
         self._send_line.emit(cmd_set_work_zero_z())
 
     def goto_zero(self) -> None:
+        from cnc_inlay.control import run_log
+        run_log.log_user("Goto work zero")
         # XY first (at current Z, expected to be safe), then Z = 0.
         self._send_line.emit(cmd_goto_zero_xy())
         self._send_line.emit(cmd_goto_zero_z())
 
     def soft_reset(self) -> None:
+        from cnc_inlay.control import run_log
+        run_log.log_user("Soft reset")
         self._send_realtime.emit(SOFT_RESET)
 
     def feed_hold(self) -> None:
+        from cnc_inlay.control import run_log
+        run_log.log_user("Feed hold")
         self._send_realtime.emit(FEED_HOLD)
 
     def cycle_start(self) -> None:
+        from cnc_inlay.control import run_log
+        run_log.log_user("Cycle start")
         self._send_realtime.emit(CYCLE_START)
 
     def send_raw_line(self, line: str) -> None:
         """Escape hatch for the manual-command UI (not used by jog/zero)."""
+        from cnc_inlay.control import run_log
+        run_log.log_user(f"Send raw: {line.strip()}")
         self._send_line.emit(line)
 
     # ----------------------------------------------------------- streaming API
@@ -539,18 +596,34 @@ class MachineController(QObject):
         start_line: int = 0,
         checkpoint: Checkpoint | None = None,
     ) -> None:
+        from cnc_inlay.control import run_log
+        n_lines = sum(1 for _ in gcode.splitlines())
+        if start_line > 0:
+            run_log.log_user(
+                f"Run from cursor (start_line={start_line}, total={n_lines})"
+            )
+        else:
+            run_log.log_user(f"Run program ({n_lines} lines)")
         self._start_stream_requested.emit(gcode, start_line, checkpoint)
 
     def stream_pause(self) -> None:
+        from cnc_inlay.control import run_log
+        run_log.log_user("Pause stream")
         self._pause_stream_requested.emit()
 
     def stream_resume(self) -> None:
+        from cnc_inlay.control import run_log
+        run_log.log_user("Resume stream")
         self._resume_stream_requested.emit()
 
     def stream_abort(self) -> None:
+        from cnc_inlay.control import run_log
+        run_log.log_user("Abort stream")
         self._abort_stream_requested.emit()
 
     def query_settings(self) -> None:
+        from cnc_inlay.control import run_log
+        run_log.log_user("Query GRBL settings ($$)")
         self._query_settings_requested.emit()
 
     def shutdown(self) -> None:

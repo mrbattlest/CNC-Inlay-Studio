@@ -664,6 +664,12 @@ class MainWindow(QMainWindow):
         check_updates_act.triggered.connect(self._on_check_for_updates_manual)
         help_menu.addAction(check_updates_act)
         help_menu.addSeparator()
+        # Surface the per-Connect-session run log so the user can attach
+        # it to bug reports without spelunking through ~/Library/Logs.
+        reveal_log_act = QAction("Reveal Run Log in Finder", self)
+        reveal_log_act.triggered.connect(self._on_reveal_run_log)
+        help_menu.addAction(reveal_log_act)
+        help_menu.addSeparator()
         # Licensing — visible whether or not the user has a license so they
         # can switch machines, re-enter, or upgrade from trial.
         buy_license_act = QAction("Buy License…", self)
@@ -1849,6 +1855,24 @@ class MainWindow(QMainWindow):
         (up-to-date, error, update available)."""
         from cnc_inlay.updater import check_for_update_async
         check_for_update_async(self._updaterResultLoud.emit)
+
+    def _on_reveal_run_log(self) -> None:
+        """Help → Reveal Run Log in Finder. Opens Finder at the active
+        log file if a session is running, otherwise at the logs folder
+        so the user can pick a previous run to share."""
+        import subprocess
+        from cnc_inlay.control import run_log
+        path = run_log.current_path()
+        if path is not None and path.exists():
+            subprocess.Popen(["open", "-R", str(path)])
+            self._set_status(f"Showing active run log: {path.name}")
+        else:
+            log_dir = Path.home() / "Library" / "Logs" / "CNC Inlay Studio"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            subprocess.Popen(["open", str(log_dir)])
+            self._set_status(
+                "No active run log — opened logs folder so you can pick a previous run."
+            )
 
     def _on_updater_result_quiet(self, result) -> None:
         """Silent variant — runs in the main thread (queued from the worker
