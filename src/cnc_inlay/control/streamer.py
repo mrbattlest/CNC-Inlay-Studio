@@ -72,23 +72,41 @@ class Streamer:
             out.append(stripped)
         if start_line > 0 and start_line < len(out):
             # Re-establish modal state and lift to safe Z before resuming.
-            # Critically, also restart the spindle: the next move out of
-            # the preamble is typically a plunge, and without a fresh
-            # M3 + ramp-up dwell here the bit plunges into wood with the
-            # spindle off — which snapped a user's bit. Scan backward
-            # from the resume point for the most recent M3 in the program
-            # (carries the right RPM for the current bit). Defaults to
-            # M3 S10000 if the gcode somehow has none.
+            # Critically, also restart the spindle and re-set the feed
+            # rate: the next move out of the preamble is typically a
+            # plunge, and without a fresh M3 + ramp-up dwell the bit
+            # plunges into wood with the spindle off (snapped a user's
+            # bit), and without a modal F set the first G1 errors out
+            # with GRBL error 22 ("feed rate undefined") because the
+            # emitter only writes the F-word on the first G1 of each
+            # chain — subsequent G1s rely on F being modal from earlier
+            # in the file, which Run-from-cursor skips past. Scan
+            # backward from the resume point for the most recent M3
+            # (carries the right RPM for the current bit) and the most
+            # recent F-word (carries the right cut feed for the current
+            # section). Defaults are conservative.
+            import re
             m3_line = "M3 S10000"
             for j in range(min(start_line, len(out)) - 1, -1, -1):
                 if out[j].upper().startswith("M3"):
                     m3_line = out[j]
+                    break
+            f_line: str | None = None
+            f_pattern = re.compile(r"\bF(\d+(?:\.\d+)?)\b", re.IGNORECASE)
+            for j in range(min(start_line, len(out)) - 1, -1, -1):
+                m = f_pattern.search(out[j])
+                if m:
+                    # Standalone F-word is a valid GRBL line — sets the
+                    # modal feed rate without commanding any motion.
+                    f_line = f"F{m.group(1)}"
                     break
             preamble = [
                 "G21", "G90", "G17", "G54", "G0 Z5",
                 m3_line,
                 "G4 P3",  # spindle ramp-up dwell — same as fresh-start emit
             ]
+            if f_line is not None:
+                preamble.append(f_line)
             # Tool-change indices need to shift by len(preamble) - start_line.
             shift = len(preamble) - start_line
             self.tool_change_at = {
