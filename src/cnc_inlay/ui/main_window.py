@@ -339,6 +339,13 @@ class MainWindow(QMainWindow):
             "padding: 10px 20px; min-width: 90px; }"
             "QTabBar::tab:selected { color: #f5a623; }"
         )
+        # Auto-sync the On-Machine scrub bar to the active preview tab.
+        # Switching from Pocket → Plug (or vice versa) updates the
+        # scrub-bar timeline so the operator never has to think about
+        # which side they're about to Run-from-cursor on. Wired via
+        # currentChanged so it fires on user clicks AND on programmatic
+        # tab switches (e.g. the post-completion "next-step" flow).
+        self._main_tabs.currentChanged.connect(self._on_main_tab_changed)
 
         self._controls = ControlsPanel(
             self._bits, self._materials, InlayParams(), self
@@ -1543,6 +1550,19 @@ class MainWindow(QMainWindow):
     def _on_open_preferences(self) -> None:
         dlg = PreferencesDialog(self)
         dlg.exec()
+
+    def _on_main_tab_changed(self, index: int) -> None:
+        """Mirror the main-area preview tab into the On-Machine scrub
+        bar so the run-from-cursor timeline always matches what the
+        operator is looking at. Tabs other than Pocket / Plug
+        (Finished, Surfacing) leave the scrub bar showing whatever
+        side was last visible — switching to those tabs isn't
+        meaningful for the run-from-cursor flow."""
+        label = self._main_tabs.tabText(index).strip().lower()
+        if label == "pocket":
+            self._control_panel.show_scrub_side("pocket")
+        elif label == "plug":
+            self._control_panel.show_scrub_side("plug")
 
     def _on_open_surfacing_dialog(self) -> None:
         """Settings → Surface plug backing… — open the surfacing planner."""

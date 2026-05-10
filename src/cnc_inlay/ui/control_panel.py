@@ -556,23 +556,18 @@ class ControlPanel(QWidget):
         )
 
         # Run-from-cursor controls live just under the scrub bar.
+        # The "Showing: <side>" label tells the operator which side's
+        # timeline is in the scrub bar — and it auto-syncs to the
+        # currently-active main-area preview tab (Pocket / Plug). The
+        # standalone "Show Pocket" / "Show Plug" buttons that used to
+        # live here were removed because switching the preview tab
+        # was a clearer, single-source-of-truth way to pick the side.
         scrub_row = QHBoxLayout()
         scrub_row.setSpacing(4)
         self._scrub_side_label = QLabel("Showing: —")
         self._scrub_side_label.setObjectName("hint")
         scrub_row.addWidget(self._scrub_side_label)
         scrub_row.addStretch(1)
-        self._show_pocket_btn = QPushButton("Show Pocket")
-        self._show_plug_btn = QPushButton("Show Plug")
-        self._show_pocket_btn.setToolTip("Load the pocket program into the scrub bar")
-        self._show_plug_btn.setToolTip("Load the plug program into the scrub bar")
-        self._show_pocket_btn.clicked.connect(lambda: self._show_scrub_side("pocket"))
-        self._show_plug_btn.clicked.connect(lambda: self._show_scrub_side("plug"))
-        for b in (self._show_pocket_btn, self._show_plug_btn):
-            b.setEnabled(False)
-            b.setMaximumWidth(110)
-        scrub_row.addWidget(self._show_pocket_btn)
-        scrub_row.addWidget(self._show_plug_btn)
         self._snap_next_bit_btn = QPushButton("⏭ Next bit")
         self._snap_next_bit_btn.setToolTip(
             "Snap the scrub handle to the next bit-change point"
@@ -612,25 +607,29 @@ class ControlPanel(QWidget):
         self, side: str, total_lines: int, segments: list[BitSegment]
     ) -> None:
         """Host calls this after Preview to register a side's program with
-        the scrub bar. Both sides can be registered; ``_show_scrub_side``
-        picks which one is currently visible."""
+        the scrub bar. Both sides can be registered; the host calls
+        ``show_scrub_side`` (e.g. when the operator switches the main
+        preview tab between Pocket and Plug) to pick which one is
+        currently visible in the scrub bar."""
         self._scrub_programs[side] = (total_lines, segments)
-        self._show_pocket_btn.setEnabled("pocket" in self._scrub_programs)
-        self._show_plug_btn.setEnabled("plug" in self._scrub_programs)
-        # Default to pocket on first load.
+        # Default to whatever side was just registered if the scrub bar
+        # is empty (first registration of a session) — otherwise leave
+        # the host in charge.
         if not self._scrub_bar.total_lines or self._scrub_side == side:
-            self._show_scrub_side(side)
+            self.show_scrub_side(side)
 
     def clear_scrub_programs(self) -> None:
         self._scrub_programs.clear()
         self._scrub_bar.clear()
         self._scrub_side_label.setText("Showing: —")
-        self._show_pocket_btn.setEnabled(False)
-        self._show_plug_btn.setEnabled(False)
         self._snap_next_bit_btn.setEnabled(False)
         self._run_from_cursor_btn.setEnabled(False)
 
-    def _show_scrub_side(self, side: str) -> None:
+    def show_scrub_side(self, side: str) -> None:
+        """Public — wired from MainWindow's main-tab change handler so
+        the scrub bar auto-tracks the active preview tab. Idempotent
+        and silent when the requested side has no registered program
+        (e.g. user is on the Finished or Surfacing tab)."""
         if side not in self._scrub_programs:
             return
         self._scrub_side = side
