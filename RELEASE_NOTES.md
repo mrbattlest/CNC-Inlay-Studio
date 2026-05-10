@@ -1,28 +1,12 @@
-- **GRBL silence detector + position-preserving recovery.** When the
-  CNC controller stops responding mid-cut (USB serial wedges, EMI
-  drops the connection, or the controller hangs), the app now
-  detects the dead silence within 5 seconds and:
-
-  1. Halts the streamer immediately so it stops shipping G-code into
-     a black hole.
-  2. Logs the event to the run log (`[event] GRBL silence detected
-     after Ns — last known WPos (x, y, z)`).
-  3. Saves the bit's most recent work-coordinate position into the
-     resume-checkpoint file on disk.
-  4. Pops a recovery banner with explicit power-cycle instructions.
-
-- After you power-cycle the controller and reconnect, the app
-  notices the saved "silenced session" checkpoint and offers to
-  restore the work-coordinate origin to the bit's last known
-  position. Since the X/Y/Z stepper motors hold position when GRBL
-  freezes (only the spindle keeps spinning), as long as you don't
-  manually crank or jog the bit, this lets you skip the imprecise
-  manual re-zero step entirely. Click Yes, then Run-from-cursor at
-  the saved line number, and the cut continues from exactly where
-  it stopped.
-
-- The crash-recovery dialog now distinguishes silence-induced
-  failures from generic aborts and surfaces the saved position
-  prominently. If you didn't move the bit by hand after the freeze,
-  Resume → Connect → restore-position → Run-from-cursor is the full
-  recovery path with zero re-alignment work.
+- **Set Z = 0 (and XY / All) now actually fires inside a tool-change
+  pause** — fixes the "click does nothing, have to abort the run"
+  symptom. v1.1.10 added a permission check that allows the action
+  while paused, but the secondary confirm dialog the action then
+  popped could appear behind the active tool-change modal and steal
+  no focus, making the click look unresponsive. In the tool-change
+  flow we now skip that secondary confirmation: clicking Set Z = 0
+  inside the tool-change dialog sends the G10 L20 P1 immediately and
+  surfaces a green status toast confirming the new zero. The full
+  confirmation dialog still appears when re-zeroing outside the
+  tool-change flow (idle or manual feed-hold), so accidental
+  re-zeros are still gated.

@@ -314,14 +314,20 @@ class ControlPanel(QWidget):
     # ---------------------------------------------------- work-zero (menu API)
 
     def _confirm_set_zero(self, axes_label: str, detail: str) -> bool:
-        """Block-and-confirm dialog before overwriting a work-zero. Re-zeroing
-        mid-job destroys alignment, so we want a deliberate two-click action.
+        """Permission gate before overwriting a work-zero.
 
-        Refuses outright if disconnected. While streaming, only allows the
-        action when the machine is paused (M0 tool change OR user-initiated
-        feed-hold) — re-zeroing Z after installing a new bit is the entire
-        reason a tool-change pause exists, so blocking it would force the
-        user to abort the whole run just to set Z = 0.
+        * Refuses if disconnected.
+        * Refuses if streaming and not currently paused.
+        * Tool-change pause fast-path: skips the secondary confirmation
+          dialog. The user has already deliberately installed a new bit,
+          jogged it to the surface, and clicked Set Z = 0 specifically
+          to re-zero — popping another "are you sure?" on top of the
+          tool-change banner can wind up behind it and make the click
+          appear to do nothing. A status-bar toast still confirms the
+          action so the user has feedback.
+        * Outside the tool-change context (idle, manual feed-hold) we
+          still show the full confirmation dialog because re-zeroing
+          mid-job destroys alignment if done unintentionally.
         """
         if not self._controller.is_connected:
             QMessageBox.information(
@@ -335,6 +341,12 @@ class ControlPanel(QWidget):
                 "The job isn't paused. Click ⏸ Pause first, then re-zero.",
             )
             return False
+        if self._paused_for_tool_change:
+            # In the tool-change flow — go straight through and let the
+            # caller fire the GRBL command. The active tool-change
+            # dialog already supplies the user-facing confirmation
+            # context.
+            return True
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Warning)
         box.setWindowTitle(f"Confirm Set {axes_label} = 0")
@@ -354,6 +366,7 @@ class ControlPanel(QWidget):
             "Sets the current X and Y machine position as the new work origin.",
         ):
             self._controller.set_work_zero_xy()
+            self._set_zero_toast("XY")
 
     def confirm_set_z_zero(self) -> None:
         if self._confirm_set_zero(
@@ -362,6 +375,7 @@ class ControlPanel(QWidget):
             "(typically just touching the wood with a paper feeler).",
         ):
             self._controller.set_work_zero_z()
+            self._set_zero_toast("Z")
 
     def confirm_set_all_zero(self) -> None:
         if self._confirm_set_zero(
@@ -369,6 +383,27 @@ class ControlPanel(QWidget):
             "Sets the current X, Y, and Z position as the new work origin.",
         ):
             self._controller.set_work_zero_all()
+            self._set_zero_toast("X / Y / Z")
+
+    def _set_zero_toast(self, axes_label: str) -> None:
+        """Visible feedback that the set-zero command went out. Especially
+        important in the tool-change-pause flow where we skip the
+        confirm dialog for ergonomics — the user needs SOME signal that
+        the click did something."""
+        if self._paused_for_tool_change:
+            self._stream_status_label.setText(
+                f"⓿ {axes_label} re-zeroed at current position — "
+                f"now click ▶ Resume to continue the cut."
+            )
+            self._stream_status_label.setStyleSheet(
+                "background:#1e3a1f; color:#3eea7a; "
+                "border:1px solid #3eea7a; border-radius:4px; "
+                "padding:4px 8px; font-weight:600;"
+            )
+        else:
+            self._stream_status_label.setText(
+                f"{axes_label} re-zeroed at current position."
+            )
 
     def confirm_set_custom_zero(self) -> None:
         """Settings → Set custom X / Y / Z… — opens the per-axis
