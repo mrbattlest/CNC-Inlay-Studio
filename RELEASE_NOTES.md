@@ -1,22 +1,24 @@
-- **Critical fix:** the V-bit wall pass was running on the wrong
-  side of the plug edge. Both pocket and plug used `polygon.buffer(
-  -lateral_reach)` to compute the V-bit's centerline path, which
-  is correct for the pocket (centerline inside the cleared cavity)
-  but wrong for the plug — it put the centerline INSIDE the plug
-  feature (in solid plug-wood), so the V-bit ground into the plug
-  material from the inside.
-- The plug V-bit centerline is now offset OUTWARD by `lateral_reach`
-  (`polygon.buffer(+lateral_reach)`), so it traces a path in the
-  cleared complement just outside the plug boundary. The cone's
-  flank then sweeps the wedge of waste wood OUTSIDE the plug,
-  leaving the plug with an **outward-sloping** wall that mates with
-  the pocket's inward-sloping wall after the stock is flipped face-
-  down for insertion.
-- Also re-enables the v1.1.9 air-cutting-skip optimisation on the
-  plug side (it was disabled in v1.1.15 because the broken
-  centerline placement made it dangerous). With the centerline now
-  correctly in air, the skip is safe again — early passes truly
-  cut nothing and skipping them saves real machine time.
-- Adds a 1/4" shank, 3/4" diameter, 2-flute solid surfacing bit to
-  the My Bits catalog (alongside the existing 3-flute insert and
-  4-flute solid options).
+- V-bit lateral-offset math now respects the bit's cone-to-shank
+  transition. The cone formula ``d × tan(half_angle)`` keeps growing
+  the cutting diameter forever in pure math, but a real V-bit's
+  cutting cone has a finite height — once the cone has widened to
+  match the shank diameter, the bit becomes a cylindrical shank
+  that doesn't widen further. Past that depth, the lateral cutting
+  edge is fixed at ``shank_radius``, not ``d × tan(half_angle)``.
+
+  Verified cone heights (from Amana / IDC Woodcraft / Whiteside
+  datasheets):
+    • 30° V-bit, 1/4″ shank → 11.85 mm
+    • 30° V-bit, 1/8″ shank → 5.92 mm
+    • 60° V-bit, 1/4″ shank → 5.50 mm
+    • 90° V-bit, 1/4″ shank → 3.18 mm
+
+  ``vbit_lateral_reach_mm`` now caps at ``shank_radius`` once the
+  cone math would exceed it, and the pocket / plug pipelines pass
+  ``vbit.shank_mm`` through so the cap is enforced in real cuts.
+- Most existing inlays (≤ ~5 mm pockets with 30°/60° V-bits and
+  1/4″ shanks) sit comfortably below the transition, so this fix
+  doesn't change their toolpaths. It matters for deeper pockets,
+  steeper angles, or smaller shanks where the bit's straight-shank
+  region would otherwise be incorrectly modeled as still-widening
+  cone.

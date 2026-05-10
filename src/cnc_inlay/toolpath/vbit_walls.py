@@ -25,15 +25,47 @@ from cnc_inlay.toolpath.passes import split_into_passes
 from cnc_inlay.toolpath.vcarve import Chain
 
 
-def vbit_lateral_reach_mm(angle_deg: float, depth_mm: float) -> float:
+def vbit_lateral_reach_mm(
+    angle_deg: float,
+    depth_mm: float,
+    shank_diameter_mm: float = 0.0,
+) -> float:
     """How far the V-bit's outer cutting edge sits from its centerline at
-    a given depth. ``angle_deg`` is the bit's full included angle; the
-    half-angle drives the trig.
+    a given depth.
+
+    The cone math ``d × tan(half_angle)`` is only valid up to the depth
+    where the cone has widened to match the shank diameter — beyond
+    that the bit is a cylindrical shank, not a cone, and the cutting
+    edge sits at a fixed ``shank_radius`` from the centerline.
+
+    For a tapered V-bit (no engraving flat tip), the cone-to-shank
+    transition depth is geometrically determined by:
+
+        cone_height = shank_diameter / (2 × tan(half_angle))
+
+    Examples (verified against Amana / IDC Woodcraft / Whiteside specs):
+      * 30° V-bit, 1/4" (6.35 mm) shank → cone height ≈ 11.85 mm
+      * 30° V-bit, 1/8" (3.175 mm) shank → cone height ≈ 5.92 mm
+      * 60° V-bit, 1/4" (6.35 mm) shank → cone height ≈ 5.50 mm
+      * 90° V-bit, 1/4" (6.35 mm) shank → cone height ≈ 3.18 mm
+
+    Pass ``shank_diameter_mm = 0`` to disable the transition cap (legacy
+    behaviour — pure cone math, useful in tests).
     """
     if angle_deg <= 0 or angle_deg >= 180 or depth_mm <= 0:
         return 0.0
     half_angle_rad = math.radians(angle_deg / 2.0)
-    return depth_mm * math.tan(half_angle_rad)
+    tan_half = math.tan(half_angle_rad)
+    if tan_half <= 0:
+        return 0.0
+    cone_reach = depth_mm * tan_half
+    if shank_diameter_mm <= 0:
+        return cone_reach
+    shank_radius = shank_diameter_mm / 2.0
+    # Once the cone reach catches up to the shank radius, the bit is the
+    # shank — cylindrical, not conical — and the cutting edge stops
+    # widening with depth. Cap the lateral reach there.
+    return min(cone_reach, shank_radius)
 
 
 def first_contact_depth_mm(
@@ -112,6 +144,7 @@ def compute_vbit_wall_chains(
     pass_depth_mm: float = 0.0,
     prev_bit_diameter_mm: float = 0.0,
     is_plug: bool = False,
+    shank_diameter_mm: float = 0.0,
 ) -> list[Chain]:
     """Generate V-bit chains for the angled-wall finish pass.
 
@@ -151,7 +184,9 @@ def compute_vbit_wall_chains(
     """
     if depth_mm <= 0:
         return []
-    lateral_reach = vbit_lateral_reach_mm(angle_deg, depth_mm)
+    lateral_reach = vbit_lateral_reach_mm(
+        angle_deg, depth_mm, shank_diameter_mm=shank_diameter_mm,
+    )
     if lateral_reach <= 0:
         return []
 

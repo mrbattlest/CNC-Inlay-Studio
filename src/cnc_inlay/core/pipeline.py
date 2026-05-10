@@ -879,6 +879,7 @@ def _generate_pocket_side(
             depth_mm=params.pocket_depth_mm,
             pass_depth_mm=params.pass_depth_mm,
             prev_bit_diameter_mm=smallest_prev_d,
+            shank_diameter_mm=vbit.shank_mm,
         )
         if vchains:
             bit_chains = list(bit_chains) + [(vbit, vchains)]
@@ -1009,6 +1010,7 @@ def _generate_plug_side(
             pass_depth_mm=params.pass_depth_mm,
             prev_bit_diameter_mm=smallest_prev_d,
             is_plug=True,
+            shank_diameter_mm=vbit.shank_mm,
         )
         if vchains:
             bit_chains = list(bit_chains) + [(vbit, vchains)]
