@@ -62,10 +62,22 @@ def _emit_section_body(section: Section, params: InlayParams) -> list[str]:
     # spikes. 3 s is enough for a Lunyee 500 W spindle to reach 10000
     # RPM cold-start.
     lines.append("G4 P3")
+    # Unconditional lift to safe Z BEFORE any lateral motion. After a
+    # tool-change M0 the operator typically re-zeroes Z by jogging the
+    # new bit's tip down to the wood surface — so when the streamer
+    # resumes here, the bit is sitting at work-Z=0 with the spindle
+    # spinning up. Without this lift, the section's first move
+    # (G0 X Y to the chain start) would drag the spinning bit
+    # laterally across the wood at surface level, gouging a slanted
+    # cut INTO the work as it traverses to the first chain. The
+    # subsequent same-Z optimisation in the chain loop still applies
+    # for adjacent chains within this section — only the very first
+    # move of the section unconditionally lifts.
+    lines.append(f"G0 Z{_fmt(safe_z)}")
 
     # State: where the bit currently is. cur_z=safe_z reflects the
-    # header's "G0 Z{safe_z}" lift; cur_x/cur_y unknown until the first
-    # rapid lands somewhere.
+    # G0 Z{safe_z} lift we just emitted above; cur_x/cur_y unknown
+    # until the first rapid lands somewhere.
     cur_x: float | None = None
     cur_y: float | None = None
     cur_z: float = safe_z

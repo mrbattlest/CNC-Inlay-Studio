@@ -1,12 +1,17 @@
-- **Set Z = 0 (and XY / All) now actually fires inside a tool-change
-  pause** — fixes the "click does nothing, have to abort the run"
-  symptom. v1.1.10 added a permission check that allows the action
-  while paused, but the secondary confirm dialog the action then
-  popped could appear behind the active tool-change modal and steal
-  no focus, making the click look unresponsive. In the tool-change
-  flow we now skip that secondary confirmation: clicking Set Z = 0
-  inside the tool-change dialog sends the G10 L20 P1 immediately and
-  surfaces a green status toast confirming the new zero. The full
-  confirmation dialog still appears when re-zeroing outside the
-  tool-change flow (idle or manual feed-hold), so accidental
-  re-zeros are still gated.
+- **Critical V-bit / tool-change cut-quality fix.** When a section
+  began after a tool change (typical V-bit-after-endmill flow), the
+  emitter assumed the bit was already at safe Z because the previous
+  section ended with a lift. After M0, though, the operator
+  re-zeroes Z by jogging the new bit's tip down to the wood surface
+  — so when the streamer resumes, the bit is sitting at work-Z = 0
+  with the spindle spinning up. The very first move (G0 X Y to the
+  start of the first chain) then dragged the spinning bit
+  laterally **across the wood at surface level**, gouging a slanted
+  cut into the workpiece on the way to its proper start position.
+- Each section now emits an unconditional ``G0 Z<safe_z>`` lift
+  immediately after the M3 spindle-on + 3-second ramp-up dwell,
+  before any X/Y motion. This guarantees the bit is clear of the
+  wood before traversing to the first chain. The same-Z optimisation
+  that skips lift+rapid+plunge between adjacent passes within a
+  section is unaffected — only the very first move of each section
+  unconditionally lifts.
