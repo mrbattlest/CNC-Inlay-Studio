@@ -1,18 +1,17 @@
-- Run log now records GRBL status reports under a new `[status]` tag
-  (previously filtered out as 5 Hz noise). Position-tracking bugs
-  are impossible to diagnose without the underlying status frames,
-  and the `[status]` tag means they're easy to grep in or out as
-  needed.
-- New `[event] suspicious wpos jump: …` line written whenever two
-  consecutive WPos values move more than 25 mm between status
-  reports — faster than any reasonable cut feed and a strong signal
-  that WCO has gone briefly stale or GRBL is reporting inconsistent
-  frames. When the purple cone in the preview jumps unexpectedly,
-  these markers point straight at the offending status pair.
-- The purple position cone now uses the diameter of the bit GRBL is
-  CURRENTLY cutting with, looked up via the streamer's tool-change
-  map — not the finishing-endmill diameter. Multi-bit jobs (e.g. a
-  V-bit wall pass after the main endmill clearance) used to draw
-  the cone sized for the endmill while the V-bit was actually in
-  the spindle, making the indicator visually wrong-sized during
-  V-bit cuts.
+- V-bit wall pass now skips the air-cutting top passes. The previous
+  flat endmill leaves a vertical-walled cavity inset by its radius;
+  the V-bit's tip is so narrow that the first several pass-depth
+  steps don't reach uncleared wood at all. Now the V-bit drops
+  straight to its first-contact depth on the first pass, then steps
+  down by the configured pass depth from there.
+
+  First-contact math is per V-bit angle:
+      contact_z = pocket_depth − (prev_bit_radius / tan(half_angle))
+
+  Examples for a 3.5 mm pocket finished with a 0.5 mm endmill:
+    • 30° V-bit: was 9 passes, now 3 (skips ~2.6 mm of air)
+    • 60° V-bit: contact at full depth (no skipping needed)
+    • 90° V-bit: same — wide enough that it cuts immediately
+
+  The benefit grows with sharper V-bit angles, deeper pockets, and
+  smaller finishing endmills.

@@ -36,11 +36,81 @@ def vbit_lateral_reach_mm(angle_deg: float, depth_mm: float) -> float:
     return depth_mm * math.tan(half_angle_rad)
 
 
+def first_contact_depth_mm(
+    angle_deg: float,
+    depth_mm: float,
+    prev_bit_diameter_mm: float,
+) -> float:
+    """Depth at which the V-bit's growing cutting circle first reaches
+    wood that the previous (smallest endmill) pass left uncut.
+
+    The V-bit's centerline sits at lateral_reach = depth × tan(half) from
+    the original wall. The previous endmill cleared a vertical-walled
+    cavity inset from the original wall by ``prev_bit_radius``. While
+    the V-bit is shallower than this depth, its cutting circle at the
+    surface — radius |z|×tan(half) — fits entirely inside the cleared
+    region and the bit cuts pure air. Once it grows past that, it starts
+    chewing into the wedge of wood between the cleared edge and the
+    original wall.
+
+        first_contact = depth − prev_bit_radius / tan(half_angle)
+
+    Returns 0 when the formula would go negative (V-bit makes contact
+    immediately) or when angle_deg / prev_bit_diameter_mm aren't usable.
+    """
+    if angle_deg <= 0 or angle_deg >= 180 or prev_bit_diameter_mm <= 0:
+        return 0.0
+    half_rad = math.radians(angle_deg / 2.0)
+    t = math.tan(half_rad)
+    if t <= 0:
+        return 0.0
+    contact = depth_mm - (prev_bit_diameter_mm / 2.0) / t
+    return max(0.0, contact)
+
+
+def _split_passes_starting_at(
+    chains: list[Chain], pass_depth_mm: float, start_depth_mm: float,
+) -> list[Chain]:
+    """Like split_into_passes but skip the first ``start_depth_mm`` of
+    travel — the bit goes straight down to that depth on the first pass
+    instead of stepping there ``pass_depth_mm`` at a time.
+
+    Used by the V-bit pass to skip the air-cutting passes at the top of
+    the cone where the bit's diameter is too narrow to reach uncleared
+    wood. ``start_depth_mm`` is positive (mm below the surface).
+    """
+    import math as _math
+    if pass_depth_mm <= 0:
+        return chains
+    output: list[Chain] = []
+    for chain in chains:
+        deepest = max(-z for _, _, z in chain)  # positive
+        # If the chain doesn't go deeper than where we want to start,
+        # there's nothing to cut — drop it entirely (caller's bug if so).
+        if deepest <= start_depth_mm + 1e-9:
+            continue
+        # Remaining depth to cover after the initial dive to start_depth.
+        remaining = deepest - start_depth_mm
+        # First pass goes to ``start_depth_mm + pass_depth`` (or to the
+        # full depth if that overshoots). Subsequent passes step by
+        # pass_depth. Final pass uses each point's true Z.
+        n_passes = max(1, _math.ceil(remaining / pass_depth_mm))
+        for i in range(1, n_passes + 1):
+            ceiling = start_depth_mm + pass_depth_mm * i  # positive
+            if i == n_passes:
+                output.append(chain)
+            else:
+                clipped = [(x, y, max(z, -ceiling)) for x, y, z in chain]
+                output.append(clipped)
+    return output
+
+
 def compute_vbit_wall_chains(
     geom: Polygon | MultiPolygon,
     angle_deg: float,
     depth_mm: float,
     pass_depth_mm: float = 0.0,
+    prev_bit_diameter_mm: float = 0.0,
 ) -> list[Chain]:
     """Generate V-bit chains for the angled-wall finish pass.
 
@@ -54,6 +124,13 @@ def compute_vbit_wall_chains(
         pass_depth_mm: max depth removed per pass. 0 means single-pass
             (V-bits handle deeper passes than flat endmills, but
             multi-pass is still safer in hardwood).
+        prev_bit_diameter_mm: the smallest endmill that ran before the
+            V-bit (the finishing bit). Used to compute the depth at
+            which the V-bit first contacts wood — passes shallower than
+            that are pure air-cuts and wasted machine time, so we skip
+            straight down to first contact instead of stepping there
+            ``pass_depth_mm`` at a time. 0 disables the optimisation
+            (full surface-down pass schedule).
 
     Returns:
         List of closed-loop chains following the design boundary inset
@@ -92,5 +169,22 @@ def compute_vbit_wall_chains(
                 chains.append([(x, y, z) for x, y in ring])
 
     if pass_depth_mm > 0:
-        chains = split_into_passes(chains, pass_depth_mm)
+        # Skip air-cutting passes when we know what bit ran before.
+        # 0.10 mm safety margin so the first real pass takes a tiny
+        # nibble rather than landing exactly at the wood surface
+        # (which would give the bit no engagement to break the chip).
+        if prev_bit_diameter_mm > 0:
+            start_depth = max(
+                0.0,
+                first_contact_depth_mm(angle_deg, depth_mm, prev_bit_diameter_mm)
+                - 0.10,
+            )
+            if start_depth > 0:
+                chains = _split_passes_starting_at(
+                    chains, pass_depth_mm, start_depth
+                )
+            else:
+                chains = split_into_passes(chains, pass_depth_mm)
+        else:
+            chains = split_into_passes(chains, pass_depth_mm)
     return chains

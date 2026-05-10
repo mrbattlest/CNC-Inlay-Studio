@@ -857,14 +857,19 @@ def _generate_pocket_side(
     )
 
     # V-bit wall-finish pass — runs LAST so it bevels the perimeter that
-    # the flat endmills just left as a vertical wall.
+    # the flat endmills just left as a vertical wall. Pass the smallest
+    # endmill diameter (last bit in `sequence` is the finisher) so the
+    # V-bit can skip the air-cutting passes at the top of its cone where
+    # the bit isn't yet wide enough to reach uncleared wood.
     if vbit is not None and vbit.type == "vbit":
         from cnc_inlay.toolpath.vbit_walls import compute_vbit_wall_chains
+        smallest_prev_d = sequence[-1].diameter_mm if sequence else 0.0
         vchains = compute_vbit_wall_chains(
             centered_geom,
             angle_deg=vbit.angle_deg,
             depth_mm=params.pocket_depth_mm,
             pass_depth_mm=params.pass_depth_mm,
+            prev_bit_diameter_mm=smallest_prev_d,
         )
         if vchains:
             bit_chains = list(bit_chains) + [(vbit, vchains)]
@@ -960,11 +965,13 @@ def _generate_plug_side(
     # these angled walls mate with the pocket's V-walls and wedge tight.
     if vbit is not None and vbit.type == "vbit":
         from cnc_inlay.toolpath.vbit_walls import compute_vbit_wall_chains
+        smallest_prev_d = sequence[-1].diameter_mm if sequence else 0.0
         vchains = compute_vbit_wall_chains(
             mirrored,
             angle_deg=vbit.angle_deg,
             depth_mm=plug_depth,
             pass_depth_mm=params.pass_depth_mm,
+            prev_bit_diameter_mm=smallest_prev_d,
         )
         if vchains:
             bit_chains = list(bit_chains) + [(vbit, vchains)]
