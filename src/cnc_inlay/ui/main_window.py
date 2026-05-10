@@ -654,14 +654,23 @@ class MainWindow(QMainWindow):
         surface_act.triggered.connect(self._on_open_surfacing_dialog)
         settings_menu.addAction(surface_act)
 
+        # PreferencesRole auto-promotes to the macOS app menu under
+        # ⌘, (next to Quit) — the standard Mac convention.
         prefs_act = QAction("Preferences…", self)
+        prefs_act.setMenuRole(QAction.PreferencesRole)
         prefs_act.triggered.connect(self._on_open_preferences)
         settings_menu.addAction(prefs_act)
 
-        # Help menu — About + Check for Updates. macOS auto-promotes any
-        # action whose menuRole is AboutRole into the application menu (the
-        # bold leftmost menu) AND keeps it visible under Help, which is the
-        # convention every native Mac app follows.
+        # Help menu — About + Check for Updates + run-log helper +
+        # licensing. macOS auto-promotes the AboutRole action into the
+        # bold application menu next to "Quit" — Qt also keeps it
+        # visible under Help so users find it from either place.
+        #
+        # All other Help actions get an explicit NoRole so Qt's default
+        # TextHeuristicRole doesn't see "Check", "Preferences", "Reveal"
+        # etc. and try to auto-move them out of the menu (a Qt 6.x bug
+        # we've now hit twice) — which would silently drop both their
+        # menu visibility and their `triggered` signal.
         help_menu = menu.addMenu("&Help")
         about_act = QAction("About CNC Inlay Studio", self)
         about_act.setMenuRole(QAction.AboutRole)  # macOS app-menu promotion
@@ -669,21 +678,25 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_act)
         help_menu.addSeparator()
         check_updates_act = QAction("Check for Updates…", self)
+        check_updates_act.setMenuRole(QAction.NoRole)
         check_updates_act.triggered.connect(self._on_check_for_updates_manual)
         help_menu.addAction(check_updates_act)
         help_menu.addSeparator()
         # Surface the per-Connect-session run log so the user can attach
         # it to bug reports without spelunking through ~/Library/Logs.
         reveal_log_act = QAction("Reveal Run Log in Finder", self)
+        reveal_log_act.setMenuRole(QAction.NoRole)
         reveal_log_act.triggered.connect(self._on_reveal_run_log)
         help_menu.addAction(reveal_log_act)
         help_menu.addSeparator()
         # Licensing — visible whether or not the user has a license so they
         # can switch machines, re-enter, or upgrade from trial.
         buy_license_act = QAction("Buy License…", self)
+        buy_license_act.setMenuRole(QAction.NoRole)
         buy_license_act.triggered.connect(self._on_buy_license)
         help_menu.addAction(buy_license_act)
         enter_license_act = QAction("Enter License…", self)
+        enter_license_act.setMenuRole(QAction.NoRole)
         enter_license_act.triggered.connect(self._on_enter_license)
         help_menu.addAction(enter_license_act)
 
@@ -1007,15 +1020,16 @@ class MainWindow(QMainWindow):
 
     def _on_save_project_as(self) -> bool:
         """Returns True on successful save, False on cancel or error."""
-        # Default to ~/Documents — the SVG's source dir is often a Downloads
-        # or temp folder that isn't where the user wants their projects to
-        # end up. The filename still inherits from the SVG when available.
-        documents = Path.home() / "Documents"
+        # Default to the last folder the user saved a project in, falling
+        # back to ~/Documents on first use. The filename still inherits
+        # from the SVG when available.
+        from cnc_inlay.core.units import get_last_folder, set_last_folder
+        start_dir = Path(get_last_folder("project"))
         if self._design and self._design.source_path is not None:
             stem = self._design.source_path.stem
-            suggested = str(documents / f"{stem}.inlay")
+            suggested = str(start_dir / f"{stem}.inlay")
         else:
-            suggested = str(documents / "untitled.inlay")
+            suggested = str(start_dir / "untitled.inlay")
         path, _ = QFileDialog.getSaveFileName(
             self, "Save project as", suggested, "Inlay project (*.inlay);;All files (*)"
         )
@@ -1028,6 +1042,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
             return False
+        set_last_folder("project", path)
         self._current_project_path = Path(path)
         self.setWindowTitle(f"CNC Inlay Studio — {self._current_project_path.name}")
         self._is_dirty = False
@@ -1240,11 +1255,14 @@ class MainWindow(QMainWindow):
         return True
 
     def _on_open_project(self) -> None:
+        from cnc_inlay.core.units import get_last_folder, set_last_folder
+        start_dir = get_last_folder("project")
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open project", "", "Inlay project (*.inlay);;All files (*)"
+            self, "Open project", start_dir, "Inlay project (*.inlay);;All files (*)"
         )
         if not path:
             return
+        set_last_folder("project", path)
         try:
             project = load_project(path)
         except Exception as exc:
@@ -1718,12 +1736,17 @@ class MainWindow(QMainWindow):
 
     def _on_save_surfacing_gcode(self, plan) -> None:
         """Save the surfacing G-code to a file the user can open in any sender."""
+        from cnc_inlay.core.units import get_last_folder, set_last_folder
+        start_dir = get_last_folder("gcode")
+        suggested = str(Path(start_dir) / f"surfacing_{plan.bit_diameter_mm:.0f}mm.gcode")
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save surfacing G-code",
-            f"surfacing_{plan.bit_diameter_mm:.0f}mm.gcode",
+            suggested,
             "G-code (*.gcode);;All files (*)",
         )
+        if path:
+            set_last_folder("gcode", path)
         if not path:
             return
         try:

@@ -109,3 +109,49 @@ def set_saved_units(units: Units) -> None:
     data = load_settings()
     data["units"] = units.value
     save_settings(data)
+
+
+# ----- last-used-folder helpers (one slot per dialog category) ---------------
+
+_LAST_FOLDER_KEY = "last_open_folders"
+
+
+def get_last_folder(category: str) -> str:
+    """Return the directory the user last opened a file in for ``category``,
+    falling back to ~/Documents on first use. Categories let "Open Design"
+    and "Open Project" each remember their own last-used folder so a user
+    bouncing between SVG asset folders and an .inlay project folder doesn't
+    end up swimming between the two on every open.
+    """
+    from pathlib import Path
+    data = load_settings()
+    folders = data.get(_LAST_FOLDER_KEY) or {}
+    saved = folders.get(category)
+    if saved:
+        p = Path(saved)
+        if p.exists() and p.is_dir():
+            return str(p)
+    documents = Path.home() / "Documents"
+    return str(documents if documents.exists() else Path.home())
+
+
+def set_last_folder(category: str, folder: str) -> None:
+    """Remember the directory the user just picked a file from / saved one
+    to. Accepts either a directory path or a file path (in which case the
+    parent directory is remembered) — the file may not yet exist on disk
+    (Save dialog case). Silently no-op when the resolved folder doesn't
+    exist on disk."""
+    from pathlib import Path
+    p = Path(folder)
+    # If it's clearly a directory, keep as-is. Otherwise treat as a
+    # file path and grab the parent — handles both pre-save (file
+    # doesn't exist yet) and post-open (file exists) cases.
+    if not p.is_dir():
+        p = p.parent
+    if not p.exists() or not p.is_dir():
+        return
+    data = load_settings()
+    folders = dict(data.get(_LAST_FOLDER_KEY) or {})
+    folders[category] = str(p)
+    data[_LAST_FOLDER_KEY] = folders
+    save_settings(data)

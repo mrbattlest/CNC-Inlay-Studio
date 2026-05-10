@@ -1977,20 +1977,34 @@ class ControlsPanel(QWidget):
 
 
 def ask_design_path(parent: QWidget) -> str | None:
+    from cnc_inlay.core.units import get_last_folder, set_last_folder
+    start_dir = get_last_folder("design")
     path, _ = QFileDialog.getOpenFileName(
         parent,
         "Load design",
-        "",
+        start_dir,
         "SVG (*.svg);;All files (*)",
     )
+    if path:
+        set_last_folder("design", path)
     return path or None
 
 
 def ask_save_path(parent: QWidget, suggested: str) -> str | None:
+    from cnc_inlay.core.units import get_last_folder, set_last_folder
+    # ``suggested`` is usually a bare filename — prepend the last-used
+    # G-code folder so the dialog opens there instead of wherever the
+    # OS happens to default.
+    from pathlib import Path
+    p = Path(suggested)
+    if not p.is_absolute():
+        suggested = str(Path(get_last_folder("gcode")) / p.name)
     path, _ = QFileDialog.getSaveFileName(
         parent,
         "Export G-code",
         suggested,
         "G-code (*.gcode *.nc);;All files (*)",
     )
+    if path:
+        set_last_folder("gcode", path)
     return path or None
