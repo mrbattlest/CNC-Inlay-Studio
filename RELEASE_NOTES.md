@@ -1,17 +1,19 @@
-- V-bit wall pass now skips the air-cutting top passes. The previous
-  flat endmill leaves a vertical-walled cavity inset by its radius;
-  the V-bit's tip is so narrow that the first several pass-depth
-  steps don't reach uncleared wood at all. Now the V-bit drops
-  straight to its first-contact depth on the first pass, then steps
-  down by the configured pass depth from there.
-
-  First-contact math is per V-bit angle:
-      contact_z = pocket_depth − (prev_bit_radius / tan(half_angle))
-
-  Examples for a 3.5 mm pocket finished with a 0.5 mm endmill:
-    • 30° V-bit: was 9 passes, now 3 (skips ~2.6 mm of air)
-    • 60° V-bit: contact at full depth (no skipping needed)
-    • 90° V-bit: same — wide enough that it cuts immediately
-
-  The benefit grows with sharper V-bit angles, deeper pockets, and
-  smaller finishing endmills.
+- Fixes the **Set Z = 0** button being blocked during a tool-change
+  pause. Setting Z = 0 after installing a new bit (paper-feeler
+  test) is the entire reason the tool-change pause exists; the old
+  refusal forced operators to abort the whole run, jog manually,
+  then Run-from-cursor to recover. Set-zero now works whenever the
+  job is paused (M0 tool change OR user-initiated feed-hold).
+- Streamer now pauses itself the instant an M0 tool-change line is
+  sent, instead of pumping more lines into GRBL's planner / serial
+  buffer. With an aggressive streamer + a slow operator (paper-
+  feeler Z zero takes a minute), the planner could fill and starve
+  jog ($J=) commands of buffer space, making jogs feel
+  unresponsive. Pausing the streamer on M0 keeps GRBL's serial RX
+  clear so jogs always land cleanly during a tool change. Clicking
+  ▶ Resume both un-pauses the streamer and clears GRBL's hold.
+- (Coming next release: jog-during-manual-pause + auto-return-to-
+  pause-position on Resume so you can pause mid-cut, jog away to
+  inspect or blow chips, then Resume and have the bit lift, return,
+  and plunge straight back to where it left off without cutting
+  through wood on the way.)

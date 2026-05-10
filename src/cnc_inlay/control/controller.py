@@ -332,6 +332,20 @@ class MachineWorker(QObject):
                 bit_name = self._streamer.tool_change_at.get(idx)
                 if bit_name is not None:
                     self._pending_tool_change_bit = bit_name
+                    # Pause the streamer immediately so it stops pumping
+                    # lines past M0 into GRBL's serial RX buffer. With
+                    # an aggressive streamer + a slow operator (paper-
+                    # feeler Z zero takes a minute), the planner can fill
+                    # up and the RX buffer can run dry of breathing room
+                    # for jog ($J=) commands. Pausing here keeps GRBL's
+                    # serial RX clear so jogs always land cleanly. The
+                    # cycle-start (~) on Resume will both clear the M0
+                    # hold AND we'll un-pause the streamer below in
+                    # stream_resume so feeding picks back up.
+                    self._streamer.pause()
+                    run_log.log_event(
+                        f"M0 tool-change pause — streamer halted for {bit_name}"
+                    )
         self.streamProgress.emit(self._streamer.cursor, self._streamer.total)
         if self._streamer.is_done:
             if self._stream_timer is not None:

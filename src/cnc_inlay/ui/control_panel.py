@@ -302,7 +302,12 @@ class ControlPanel(QWidget):
     def _confirm_set_zero(self, axes_label: str, detail: str) -> bool:
         """Block-and-confirm dialog before overwriting a work-zero. Re-zeroing
         mid-job destroys alignment, so we want a deliberate two-click action.
-        Refuses outright if disconnected or streaming.
+
+        Refuses outright if disconnected. While streaming, only allows the
+        action when the machine is paused (M0 tool change OR user-initiated
+        feed-hold) — re-zeroing Z after installing a new bit is the entire
+        reason a tool-change pause exists, so blocking it would force the
+        user to abort the whole run just to set Z = 0.
         """
         if not self._controller.is_connected:
             QMessageBox.information(
@@ -310,11 +315,10 @@ class ControlPanel(QWidget):
                 "Connect to the CNC machine first.",
             )
             return False
-        if self._streaming:
+        if self._streaming and not self._paused_for_tool_change:
             QMessageBox.warning(
                 self, "Streaming in progress",
-                "Cannot change the work zero while a job is running. "
-                "Pause and abort the job first if you really need to re-zero.",
+                "The job isn't paused. Click ⏸ Pause first, then re-zero.",
             )
             return False
         box = QMessageBox(self)
