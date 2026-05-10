@@ -773,8 +773,15 @@ def _rest_machine_chains(
 
         _report(idx, 0.50, f"{bit.name}: ordering chains")
         ordered_main = order_chains(raw) if raw else []
+        # Pass `region` to the merge so connectors that would draw a
+        # straight cut through uncut wood (the design feature on the
+        # plug side) are refused. Without this guard the largest plug
+        # bit would happily merge two rings that sit on opposite sides
+        # of a JMU letter, ruining the inlay.
         ordered_main = (
-            merge_close_loops(ordered_main, bit.diameter_mm * 1.05)
+            merge_close_loops(
+                ordered_main, bit.diameter_mm * 1.05, inside_region=region,
+            )
             if ordered_main else []
         )
 
@@ -812,7 +819,9 @@ def _rest_machine_chains(
         _report(idx, 0.80, f"{bit.name}: optimizing toolpath order")
         combined = ordered_main + cleanup_chains
         combined = order_chains(combined)
-        combined = merge_close_loops(combined, bit.diameter_mm * 2.5)
+        combined = merge_close_loops(
+            combined, bit.diameter_mm * 2.5, inside_region=region,
+        )
         full = split_into_passes(combined, pass_depth_mm)
         out.append((bit, full))
 

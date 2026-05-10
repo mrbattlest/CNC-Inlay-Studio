@@ -165,19 +165,64 @@ def _closest_index(chain: Chain, target: tuple[float, float, float]) -> tuple[in
     return best_i, best_d
 
 
-def merge_close_loops(chains: list[Chain], max_jump_mm: float) -> list[Chain]:
+def merge_close_loops(
+    chains: list[Chain],
+    max_jump_mm: float,
+    inside_region=None,
+) -> list[Chain]:
     """Merge consecutive chains that are close enough to connect at depth.
 
     For closed-loop chains, the next chain is rotated so its start point is
     closest to the previous chain's end — making the connecting cut as short
-    as possible. The merge happens only when both chains are at the same Z
-    and the closest-point gap is within ``max_jump_mm`` (a connecting cut at
-    depth that's safe to make through already-cleared material).
+    as possible. The merge happens only when:
+      * both chains are at the same Z, and
+      * the closest-point gap is within ``max_jump_mm``, and
+      * (when ``inside_region`` is provided) the straight connector segment
+        lies entirely within that region.
 
-    Open chains are merged only if the endpoint-to-startpoint gap is small.
+    The ``inside_region`` guard exists because the merge produces a literal
+    G1 cut at depth between the two endpoints. On the pocket side that's
+    safe — adjacent rings sit within bit-diameter of each other and the
+    intervening material is already cleared. On the plug side, however,
+    the cleared region (the complement) is **interrupted by the design
+    feature itself** (the JMU letters, dachshund silhouettes, etc.). Two
+    rings on opposite sides of a letter can be within ``max_jump_mm`` of
+    each other and the merge would draw a G1 line straight through the
+    letter — destroying the inlay. Pass ``inside_region=region`` (the
+    same polygon you handed to the rest-machining run) to refuse those
+    cross-feature connectors.
+
+    Open chains are merged only if the endpoint-to-startpoint gap is small
+    (and likewise inside the region when supplied).
     """
     if not chains:
         return []
+    from shapely.geometry import LineString
+    # Cap on segment-validation cost: a tight buffer keeps the
+    # ``covers`` check from rejecting connectors that hug the cleared
+    # region's boundary by sub-µm tolerance from shapely's coordinate
+    # rounding.
+    region_for_check = None
+    if inside_region is not None and not inside_region.is_empty:
+        try:
+            region_for_check = inside_region.buffer(0.01)
+        except Exception:
+            region_for_check = inside_region
+
+    def _connector_safe(a_xyz, b_xyz) -> bool:
+        if region_for_check is None:
+            return True
+        try:
+            seg = LineString([(a_xyz[0], a_xyz[1]), (b_xyz[0], b_xyz[1])])
+            # `covers` includes boundary, which is exactly what we want
+            # for a chain endpoint that touches the region edge.
+            return region_for_check.covers(seg)
+        except Exception:
+            # If shapely chokes (rare but possible on degenerate
+            # geometry), refuse the merge — the cost of an extra
+            # lift+rapid is far less than a destroyed cut.
+            return False
+
     merged: list[list[tuple[float, float, float]]] = [list(chains[0])]
     for nxt in chains[1:]:
         prev = merged[-1]
@@ -193,9 +238,16 @@ def merge_close_loops(chains: list[Chain], max_jump_mm: float) -> list[Chain]:
             if dist > max_jump_mm:
                 merged.append(list(nxt))
                 continue
+            connector_target = nxt[idx]
+            if not _connector_safe(prev[-1], connector_target):
+                merged.append(list(nxt))
+                continue
             prev.extend(_rotate_loop(nxt, idx))
         else:
             if _xy_dist(prev[-1], nxt[0]) > max_jump_mm:
+                merged.append(list(nxt))
+                continue
+            if not _connector_safe(prev[-1], nxt[0]):
                 merged.append(list(nxt))
                 continue
             prev.extend(nxt)
