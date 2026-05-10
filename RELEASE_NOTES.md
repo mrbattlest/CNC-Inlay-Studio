@@ -1,15 +1,16 @@
-- **Critical fix:** plug toolpaths could draw a straight cut through
-  the design feature on the largest roughing bit. The `merge_close_loops`
-  optimisation joins two adjacent ring-chains into one continuous cut
-  with a G1 connector at depth, on the assumption that the intervening
-  material is already cleared. That's true on the pocket side, but on
-  the **plug** side the cleared region is the *complement* — interrupted
-  by the design feature itself. Two rings on opposite sides of a JMU
-  letter (or a dachshund silhouette, etc.) could be within the merge's
-  jump threshold (~16 mm for a 6.35 mm bit) and the merge would draw a
-  G1 line straight through the letter, ruining the inlay.
-
-  `merge_close_loops` now takes an `inside_region` polygon and refuses
-  any connector whose straight segment leaves that region. The pipeline
-  passes the cleared region to both merge calls, so cross-feature
-  connectors are reliably rejected on every bit on every job.
+- **Critical follow-up to v1.1.12:** the cached toolpath restored
+  on project open didn't honour pipeline bugfixes between releases.
+  Cache signatures hashed inputs (design / params / materials / bits)
+  but not the app version, so a cache produced by buggy v1.1.11 was
+  cleanly restored by fixed v1.1.12 — same inputs, same hash, no
+  invalidation. Users who never clicked Preview after the v1.1.12
+  update would keep streaming the stale (still-cuts-through-the-
+  letter) plug G-code.
+- The cache signature now includes ``cnc_inlay.__version__``, so
+  any future pipeline change (bugfix or otherwise) auto-invalidates
+  every prior cache. Updating the app forces a Preview re-run on
+  next open.
+- When a saved cache is rejected (because of an app update or any
+  changed input), the user now gets an explicit dialog telling them
+  to click Preview Toolpaths before Run on Machine — instead of the
+  silent status-bar nudge that v1.1.12 used.

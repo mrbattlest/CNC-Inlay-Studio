@@ -198,11 +198,19 @@ def _compute_cache_signature(
     """Hash every input that influences the pipeline output. The cache is
     only restored when this hash matches the current state — any edit to
     geometry, params, materials, bit selection, or speeds invalidates it.
+
+    The app version is also folded into the hash so a pipeline bugfix
+    (e.g. v1.1.12's plug-cut connector validation) auto-invalidates any
+    cache that was produced by an earlier, buggier version. Without this,
+    a user who never clicks Preview after updating could keep streaming
+    the cached old G-code and never benefit from the fix.
     """
     import hashlib
     import json as _json
+    import cnc_inlay
 
     h = hashlib.sha256()
+    h.update(cnc_inlay.__version__.encode())
     if design is not None and design.polygon is not None:
         try:
             h.update(design.polygon.wkb)
@@ -1372,6 +1380,32 @@ class MainWindow(QMainWindow):
             if cache_restored:
                 self._set_status(
                     f"Loaded project {source_path.name} (cached toolpaths)"
+                )
+            elif project.cached_result is not None:
+                # Had a cache but it didn't match — most likely the app was
+                # updated since save (v1.1.13+ folds app version into the
+                # signature so a pipeline bugfix auto-invalidates earlier
+                # caches). Tell the user to recompute before running, OTHERWISE
+                # they'd hit the empty-result guard on Run which is less
+                # obvious about what to do next.
+                self._set_status(
+                    f"Loaded {source_path.name} — click Preview Toolpaths "
+                    "to recompute (cached chains were invalidated by an app "
+                    "update or parameter change)."
+                )
+                QMessageBox.information(
+                    self,
+                    "Toolpaths need to be recomputed",
+                    "<b>This project's cached toolpaths are out of date.</b>"
+                    "<br><br>"
+                    "Most often this happens because the app was updated and "
+                    "the pipeline now produces different (usually safer) "
+                    "G-code, OR a parameter changed since the project was "
+                    "last saved."
+                    "<br><br>"
+                    "<b>Click Preview Toolpaths</b> before clicking Run on "
+                    "Machine — running directly would either fail or stream "
+                    "the stale paths."
                 )
             else:
                 self._set_status(f"Loaded project {source_path.name}")
