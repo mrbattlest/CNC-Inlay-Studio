@@ -77,6 +77,11 @@ class MachineWorker(QObject):
     streamAborted = Signal(str)        # reason
     toolChangeRequired = Signal(str)   # bit name about to be paused for
     settingsReceived = Signal(dict, list)  # ({id: value}, [raw_response_lines])
+    # Fired when GRBL stops responding mid-stream — no [rx] for the
+    # configured silence threshold. Carries (silence_seconds,
+    # last_known_wpos_or_None) so the UI can offer to restore the
+    # work-zero offsets after the user power-cycles the controller.
+    grblSilenceDetected = Signal(float, object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -104,6 +109,20 @@ class MachineWorker(QObject):
         # the spindle actually stopped, prompting the user to reach for a
         # spinning bit.
         self._pending_tool_change_bit: str | None = None
+        # Silence detector: timestamp (monotonic seconds) of the last byte
+        # we read from GRBL. Refreshed on every status report and ack.
+        # A separate timer fires periodically and declares the connection
+        # lost when this gets stale during a stream.
+        import time as _time
+        self._last_rx_monotonic: float = _time.monotonic()
+        self._silence_timer: QTimer | None = None
+        self._silence_threshold_s: float = 5.0
+        self._silence_already_fired: bool = False
+        # Last-known work-coordinate position (from a recent status
+        # report). Persisted into the checkpoint every save tick so we
+        # can offer to restore work-zero on next reconnect after a
+        # silence event.
+        self._last_wpos: Position | None = None
 
     # ---------------------------------------------------------------- slots
 
@@ -200,6 +219,7 @@ class MachineWorker(QObject):
     ) -> None:
         if self._serial is None or self._streamer is not None:
             return
+        import time as _time
         self._streamer = Streamer()
         self._streamer.load(gcode, start_line=start_line)
         self._checkpoint = checkpoint
@@ -213,6 +233,15 @@ class MachineWorker(QObject):
             self._checkpoint_timer.setInterval(2000)
             self._checkpoint_timer.timeout.connect(self._save_checkpoint_tick)
             self._checkpoint_timer.start()
+        # Silence detector: armed only while streaming. Reset the
+        # last-rx clock now (so the threshold isn't immediately tripped
+        # if we just connected) and start the check timer at 1 s.
+        self._last_rx_monotonic = _time.monotonic()
+        self._silence_already_fired = False
+        self._silence_timer = QTimer(self)
+        self._silence_timer.setInterval(1000)
+        self._silence_timer.timeout.connect(self._check_grbl_silence)
+        self._silence_timer.start()
         self.streamStarted.emit(self._streamer.total)
 
     @Slot()
@@ -261,6 +290,9 @@ class MachineWorker(QObject):
         if self._checkpoint_timer is not None:
             self._checkpoint_timer.stop()
             self._checkpoint_timer = None
+        if self._silence_timer is not None:
+            self._silence_timer.stop()
+            self._silence_timer = None
         self._streamer = None
         self._pending_tool_change_bit = None
         from cnc_inlay.control import run_log
@@ -268,6 +300,57 @@ class MachineWorker(QObject):
         # Keep the checkpoint on disk after an abort/error so the user can
         # recover. Only clear on clean completion.
         self.streamAborted.emit(reason)
+
+    def _check_grbl_silence(self) -> None:
+        """Fired by the silence-detector timer (1 Hz). When the time
+        since the last byte we read from GRBL exceeds the silence
+        threshold during an active stream, we declare the connection
+        lost. The user typically can't recover without power-cycling
+        the controller, and any further G-code we ship would just be
+        written into a black hole — better to halt the streamer
+        immediately, log the event, and surface a banner with recovery
+        instructions.
+
+        We snapshot the most recent WPos into the checkpoint at the
+        same time so the user can restore the work-zero offsets to
+        match the bit's current physical position after the controller
+        comes back. That avoids the manual re-zero step that's hard to
+        do with high enough precision to keep a multi-bit cut aligned.
+        """
+        if self._streamer is None or self._silence_timer is None:
+            return
+        if self._silence_already_fired:
+            return
+        import time as _time
+        gap = _time.monotonic() - self._last_rx_monotonic
+        if gap < self._silence_threshold_s:
+            return
+        # GRBL has gone silent. Capture the last known position into
+        # the checkpoint and persist it before any state cleanup, so
+        # even an immediate process death wouldn't lose it.
+        self._silence_already_fired = True
+        from cnc_inlay.control import run_log
+        wpos = self._last_wpos
+        wpos_str = (
+            f"({wpos.x:.3f}, {wpos.y:.3f}, {wpos.z:.3f})"
+            if wpos is not None else "(unknown)"
+        )
+        run_log.log_event(
+            f"GRBL silence detected after {gap:.1f}s — "
+            f"last known WPos {wpos_str}"
+        )
+        if self._checkpoint is not None:
+            self._checkpoint.grbl_silenced = True
+            if wpos is not None:
+                self._checkpoint.last_wpos_x_mm = float(wpos.x)
+                self._checkpoint.last_wpos_y_mm = float(wpos.y)
+                self._checkpoint.last_wpos_z_mm = float(wpos.z)
+            try:
+                save_checkpoint(self._checkpoint)
+            except Exception:
+                pass
+        self.grblSilenceDetected.emit(gap, wpos)
+        self._stop_stream(f"GRBL silent for {gap:.1f}s — connection lost")
 
     @Slot()
     def query_settings(self) -> None:
@@ -368,6 +451,13 @@ class MachineWorker(QObject):
         acked = max(0, self._streamer.cursor - len(self._streamer.pending))
         self._checkpoint.cursor = acked
         self._checkpoint.total_lines = self._streamer.total
+        # Persist the most recent WPos every tick so a sudden GRBL
+        # silence event has a fresh fallback to restore from on next
+        # reconnect.
+        if self._last_wpos is not None:
+            self._checkpoint.last_wpos_x_mm = float(self._last_wpos.x)
+            self._checkpoint.last_wpos_y_mm = float(self._last_wpos.y)
+            self._checkpoint.last_wpos_z_mm = float(self._last_wpos.z)
         save_checkpoint(self._checkpoint)
 
     # -------------------------------------------------------------- private
@@ -376,10 +466,14 @@ class MachineWorker(QObject):
         if self._serial is None:
             return
         from cnc_inlay.control import run_log
+        import time as _time
         for _ in range(64):  # cap iterations to avoid starving the event loop
             line = self._serial.read_line()
             if not line:
                 break
+            # Any byte we receive — status, ok, error, message, anything —
+            # counts as proof GRBL is alive. Refresh the silence timer.
+            self._last_rx_monotonic = _time.monotonic()
             if line.startswith("<") and line.endswith(">"):
                 # Status reports get their own [status] tag so users can
                 # share them for position-tracking debugging without us
@@ -394,6 +488,12 @@ class MachineWorker(QObject):
                         self._cached_wco = status.wco
                     elif self._cached_wco is not None and status.mpos is not None:
                         status = replace(status, wco=self._cached_wco)
+                    # Track the most recent WPos for the silence-detector
+                    # checkpoint. Pulled from effective_wpos so we get
+                    # the same value the UI's position cone uses.
+                    eff = status.effective_wpos
+                    if eff is not None:
+                        self._last_wpos = eff
                     self.statusReceived.emit(status)
                     # Once GRBL actually halts (Hold), the M0 has finished
                     # draining the planner queue and the spindle is stopped.
@@ -466,6 +566,7 @@ class MachineController(QObject):
     streamAborted = Signal(str)
     toolChangeRequired = Signal(str)
     settingsReceived = Signal(dict, list)
+    grblSilenceDetected = Signal(float, object)
 
     # Internal signals to the worker (queued cross-thread).
     _open_requested = Signal(str)
@@ -513,6 +614,7 @@ class MachineController(QObject):
         self._worker.streamAborted.connect(self.streamAborted.emit)
         self._worker.toolChangeRequired.connect(self.toolChangeRequired.emit)
         self._worker.settingsReceived.connect(self.settingsReceived.emit)
+        self._worker.grblSilenceDetected.connect(self.grblSilenceDetected.emit)
 
         self._thread.start()
         # Belt-and-suspenders cleanup: if the process exits via a path that

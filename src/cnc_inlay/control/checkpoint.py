@@ -40,6 +40,20 @@ class Checkpoint:
     pocket_thickness_mm: float = 0.0
     plug_thickness_mm: float = 0.0
     pocket_depth_mm: float = 0.0
+    # Last known work-coordinate position (from a recent GRBL status
+    # report). Persisted every checkpoint tick so that if GRBL goes
+    # silent mid-cut and the user has to power-cycle the controller,
+    # we can offer to restore the work-zero offsets to keep the bit's
+    # current physical position aligned with the cut. None on legacy
+    # checkpoints / pre-stream state.
+    last_wpos_x_mm: float | None = None
+    last_wpos_y_mm: float | None = None
+    last_wpos_z_mm: float | None = None
+    # True when the cut ended because GRBL stopped responding (silence
+    # detector fired), not a clean completion or a user abort. This
+    # flag drives the "GRBL went silent — restore last known position?"
+    # offer on next reconnect.
+    grbl_silenced: bool = False
 
 
 def save_checkpoint(cp: Checkpoint) -> None:

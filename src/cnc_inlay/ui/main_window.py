@@ -813,6 +813,7 @@ class MainWindow(QMainWindow):
         self._controller.statusChanged.connect(self._on_machine_status_changed)
         self._controller.settingsReceived.connect(self._on_grbl_settings_received)
         self._controller.response.connect(self._on_grbl_response)
+        self._controller.grblSilenceDetected.connect(self._on_grbl_silence_detected)
         self._control_panel.grblConfigRequested.connect(self._controller.query_settings)
         self._control_panel.grblUnlockRequested.connect(self._on_grbl_unlock)
         self._control_panel.grblRawCommandRequested.connect(self._on_grbl_raw_command)
@@ -2571,10 +2572,52 @@ class MainWindow(QMainWindow):
         )
         from datetime import datetime
         when = datetime.fromtimestamp(cp.last_updated_at).strftime("%b %-d, %H:%M")
+        # If the previous session ended via the silence detector, surface
+        # the saved bit position prominently — this is the path where the
+        # user CAN resume without manually re-zeroing as long as they
+        # didn't move the bit.
+        silence_block = ""
+        if cp.grbl_silenced:
+            xyz_known = (
+                cp.last_wpos_x_mm is not None
+                and cp.last_wpos_y_mm is not None
+                and cp.last_wpos_z_mm is not None
+            )
+            if xyz_known:
+                silence_block = (
+                    "<div style='background:#3d2f10; color:#f5a623; "
+                    "padding:10px 12px; margin-top:10px; border-left:3px solid #f5a623;'>"
+                    "<b>The cut stopped because GRBL went silent</b> — the "
+                    "controller froze mid-cut. Last known bit position:<br>"
+                    f"&nbsp;&nbsp;X = {cp.last_wpos_x_mm:+.3f} mm, "
+                    f"Y = {cp.last_wpos_y_mm:+.3f} mm, "
+                    f"Z = {cp.last_wpos_z_mm:+.3f} mm<br><br>"
+                    "If you didn't move the bit by hand after the freeze, "
+                    "click <b>Resume</b> and the app will restore the "
+                    "work-zero offsets automatically once you reconnect — "
+                    "no manual re-zero needed."
+                    "</div>"
+                )
+            else:
+                silence_block = (
+                    "<div style='background:#3d2f10; color:#f5a623; "
+                    "padding:10px 12px; margin-top:10px;'>"
+                    "<b>The cut stopped because GRBL went silent</b>, but the "
+                    "bit's last position wasn't captured. You'll need to "
+                    "manually re-zero before resuming."
+                    "</div>"
+                )
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Warning)
         msg.setWindowTitle("Recover unfinished cut?")
         msg.setTextFormat(Qt.RichText)
+        rezero_text = (
+            "Choose <b>Resume</b> to load the project. "
+            "<i>Position will be restored automatically on reconnect.</i><br><br>"
+            if cp.grbl_silenced and cp.last_wpos_x_mm is not None else
+            "Choose <b>Resume</b> to load the project and prepare to continue from the "
+            "last chain boundary. You'll need to re-zero X/Y/Z before clicking Run.<br><br>"
+        )
         msg.setText(
             f"<h3 style='margin:0;'>An unfinished cut was found.</h3>"
             f"<p>The previous session was streaming the <b>{cp.side}</b> of "
@@ -2585,9 +2628,9 @@ class MainWindow(QMainWindow):
             f"<td><b>{cp.cursor:,} / {cp.total_lines:,} lines ({progress_pct}%)</b></td></tr>"
             f"<tr><td style='color:#9aa0a6; padding-right:12px;'>Endmill:</td><td>{cp.endmill_name}</td></tr>"
             f"</table>"
+            f"{silence_block}"
             f"<p style='margin-top:12px;'>"
-            f"Choose <b>Resume</b> to load the project and prepare to continue from the "
-            f"last chain boundary. You'll need to re-zero X/Y/Z before clicking Run.<br><br>"
+            f"{rezero_text}"
             f"Choose <b>Discard</b> to delete the recovery file and start fresh.</p>"
         )
         resume_btn = msg.addButton("Resume", QMessageBox.AcceptRole)
@@ -3017,6 +3060,67 @@ class MainWindow(QMainWindow):
         if not connected:
             for c in self._all_2d_canvases() + self._all_3d_canvases():
                 c.clear_machine_position()
+            return
+        # Connected — if a previous session ended with GRBL going silent
+        # AND we have a saved last-known position AND the user hasn't
+        # already restored it this session, offer to apply the saved
+        # work-zero offsets so they can resume without manual re-zero.
+        cp = self._pending_resume
+        if (
+            cp is not None
+            and cp.grbl_silenced
+            and cp.last_wpos_x_mm is not None
+            and cp.last_wpos_y_mm is not None
+            and cp.last_wpos_z_mm is not None
+            and not getattr(self, "_position_restored_this_session", False)
+        ):
+            self._offer_restore_saved_position(cp)
+
+    def _offer_restore_saved_position(self, cp) -> None:
+        """Pop a confirmation dialog asking the user whether the bit
+        is still at the position GRBL last reported before going silent.
+        On Yes, send G10 L20 P1 with those values so the work-coordinate
+        system is exactly where it was when the cut stopped — letting
+        the user resume from line N without any manual re-zero."""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Restore last known position?")
+        msg.setTextFormat(Qt.RichText)
+        msg.setText(
+            f"<b>Restore the work-coordinate origin to the bit's last known "
+            f"position before GRBL went silent?</b><br><br>"
+            f"Saved position:<br>"
+            f"&nbsp;&nbsp;&nbsp;X = {cp.last_wpos_x_mm:+.3f} mm<br>"
+            f"&nbsp;&nbsp;&nbsp;Y = {cp.last_wpos_y_mm:+.3f} mm<br>"
+            f"&nbsp;&nbsp;&nbsp;Z = {cp.last_wpos_z_mm:+.3f} mm"
+            f"<br><br>"
+            f"<b>Click YES only if the bit hasn't moved since the cut "
+            f"stopped.</b> The CNC's X/Y/Z stepper motors hold position "
+            f"when GRBL freezes (only the spindle keeps spinning), so as "
+            f"long as you didn't manually crank or jog the bit, this is "
+            f"safe and skips the imprecise manual re-zero step."
+            f"<br><br>"
+            f"After restore: click ▶ Run from cursor at line "
+            f"<b>{cp.cursor:,}</b> to resume the cut."
+        )
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.No)
+        if msg.exec() != QMessageBox.Yes:
+            return
+        from cnc_inlay.control.grbl import cmd_set_work_custom
+        cmd = cmd_set_work_custom(
+            x_mm=cp.last_wpos_x_mm,
+            y_mm=cp.last_wpos_y_mm,
+            z_mm=cp.last_wpos_z_mm,
+        )
+        if cmd:
+            self._controller.send_raw_line(cmd)
+            self._position_restored_this_session = True
+            self._set_status(
+                f"Work zero restored to ({cp.last_wpos_x_mm:+.3f}, "
+                f"{cp.last_wpos_y_mm:+.3f}, {cp.last_wpos_z_mm:+.3f}). "
+                f"Click Run from cursor at line {cp.cursor:,} to resume."
+            )
 
     def _on_stream_started(self, total: int) -> None:
         import time
@@ -3193,6 +3297,41 @@ class MainWindow(QMainWindow):
             c.clear_machine_position()
         self._sleep_inhibitor.release()
         self._set_status(f"Cut aborted: {reason}")
+
+    def _on_grbl_silence_detected(self, gap_seconds: float, last_wpos) -> None:
+        """GRBL stopped talking mid-stream. Show a recovery dialog with
+        the saved last-known position so the user can power-cycle the
+        controller and resume from the same physical bit position
+        instead of having to re-zero by hand."""
+        wpos_text = (
+            f"<br><br><b>Last known bit position (work coordinates):</b>"
+            f"<br>&nbsp;&nbsp;&nbsp;X = {last_wpos.x:+.3f} mm"
+            f"<br>&nbsp;&nbsp;&nbsp;Y = {last_wpos.y:+.3f} mm"
+            f"<br>&nbsp;&nbsp;&nbsp;Z = {last_wpos.z:+.3f} mm"
+            f"<br><br>This is saved to disk. <b>Don't move the bit by hand.</b>"
+            f"<br>After you power-cycle the controller and reconnect, "
+            f"the app will offer to restore these coordinates so you can "
+            f"resume the cut from where it left off — no manual re-zero."
+            if last_wpos is not None else
+            "<br><br>The bit's last position couldn't be saved (no recent "
+            "GRBL status report). You'll need to manually re-zero before "
+            "resuming."
+        )
+        QMessageBox.warning(
+            self,
+            "GRBL connection lost",
+            f"<b>The CNC controller stopped responding.</b>"
+            f"<br><br>No GRBL status reports for {gap_seconds:.1f} seconds — "
+            f"the streamer has been halted. The spindle is still spinning "
+            f"if it was running.{wpos_text}"
+            f"<br><br><b>Recovery:</b>"
+            f"<br>&nbsp;&nbsp;1. Hit the e-stop or power-cycle the spindle.<br>"
+            f"&nbsp;&nbsp;2. Unplug the controller's USB for 5 seconds, "
+            f"plug back in.<br>"
+            f"&nbsp;&nbsp;3. Click Connect to reconnect.<br>"
+            f"&nbsp;&nbsp;4. Accept the position-restore offer.<br>"
+            f"&nbsp;&nbsp;5. Click ▶ Run from cursor at the resume line."
+        )
 
     def _on_grbl_response(self, resp) -> None:
         """Mirror every GRBL line into the on-screen console panel."""
