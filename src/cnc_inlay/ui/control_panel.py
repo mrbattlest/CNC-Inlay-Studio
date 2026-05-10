@@ -245,13 +245,27 @@ class ControlPanel(QWidget):
             "}"
             "QPushButton:checked:hover { background: #ffb945; color: #1d1f24; }"
         )
-        for value in (0.1, 1.0, 10.0):
+        # 0.001 / 0.01 / 0.1 / 1 / 10 mm steps. The two finer ones (0.001
+        # and 0.01) let the user dial in precise positioning when paper-
+        # feeler-zeroing or aligning to a fixture mark — earlier the
+        # smallest step was 0.1 mm which is way too coarse for those
+        # workflows. Buttons get slightly narrower so all five fit on
+        # the same row without crowding.
+        for value in (0.001, 0.01, 0.1, 1.0, 10.0):
+            # Show the literal value, not f-string :g (which would print
+            # "0.001" as "0.001" but "0.01" as "0.01" and "10" as "10" —
+            # consistent enough). Use a fixed-width font column for
+            # alignment.
             label = f"{value:g}"
             btn = QPushButton(label)
             btn.setCheckable(True)
-            btn.setFixedWidth(40)
+            btn.setFixedWidth(46)
             btn.setStyleSheet(step_btn_style)
-            btn.setToolTip(f"Each jog button moves the bit {label} mm")
+            btn.setToolTip(
+                f"Each jog button moves the bit {label} mm. "
+                f"Use 0.001 / 0.01 for fine paper-feeler Z-zero work; "
+                f"1 / 10 for general positioning."
+            )
             self._step_group.addButton(btn)
             self._step_buttons[value] = btn
             step_row.addWidget(btn)
