@@ -630,7 +630,18 @@ class MainWindow(QMainWindow):
         self._set_all_act.triggered.connect(
             lambda: self._control_panel.confirm_set_all_zero()
         )
-        for act in (self._set_xy_act, self._set_z_act, self._set_all_act):
+        # Custom X / Y / Z — for users who want to set the work zero to
+        # something other than zero (e.g. fixturing the bit at a known
+        # corner offset, recovering after a manual jog, or aligning to a
+        # second-pass continuation point).
+        self._set_custom_act = QAction("Set custom X / Y / Z…", self)
+        self._set_custom_act.triggered.connect(
+            lambda: self._control_panel.confirm_set_custom_zero()
+        )
+        for act in (
+            self._set_xy_act, self._set_z_act, self._set_all_act,
+            self._set_custom_act,
+        ):
             zero_menu.addAction(act)
 
         settings_menu.addSeparator()

@@ -356,6 +356,27 @@ class ControlPanel(QWidget):
         ):
             self._controller.set_work_zero_all()
 
+    def confirm_set_custom_zero(self) -> None:
+        """Settings → Set custom X / Y / Z… — opens the per-axis
+        custom-value dialog and sends the resulting G10 L20 P1 command."""
+        if not self._controller.is_connected:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "Not connected", "Connect to the CNC machine first.",
+            )
+            return
+        if self._streaming and not self._paused_for_tool_change:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, "Streaming in progress",
+                "The job isn't paused. Click ⏸ Pause first, then re-zero.",
+            )
+            return
+        from cnc_inlay.ui.grbl_command_dialog import SetCustomZeroDialog
+        dlg = SetCustomZeroDialog(self)
+        dlg.commandRequested.connect(self._controller.send_raw_line)
+        dlg.exec()
+
     # ---------------------------------------------------------- simulate box
 
     def _build_simulate_box(self) -> QGroupBox:
@@ -741,14 +762,16 @@ class ControlPanel(QWidget):
     # ----------------------------------------------------------- simulator API
 
     def _on_grbl_raw_clicked(self) -> None:
-        text, ok = QInputDialog.getText(
-            self,
-            "Send raw command",
-            "GRBL / G-code command to send (e.g. <code>$102=400</code>, "
-            "<code>$X</code>, <code>G0 X10</code>):",
-        )
-        if ok and text.strip():
-            self.grblRawCommandRequested.emit(text.strip())
+        # Use the dropdown-driven command builder rather than a bare
+        # text prompt — picks the right G-code line from a list of
+        # common commands and surfaces only the parameters that command
+        # needs (RPM for M3, dwell seconds for G4, X/Y/Z for G0/G1, etc.).
+        # Falling back to the raw-text option is still available inside
+        # the dialog as the "(Custom raw command…)" entry.
+        from cnc_inlay.ui.grbl_command_dialog import SendCommandDialog
+        dlg = SendCommandDialog(self)
+        dlg.commandRequested.connect(self.grblRawCommandRequested.emit)
+        dlg.exec()
 
     def _on_sim_speed(self, value: int) -> None:
         self._sim_speed_label.setText(f"{value}×")

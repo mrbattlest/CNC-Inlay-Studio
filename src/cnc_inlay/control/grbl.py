@@ -201,6 +201,33 @@ def cmd_jog(axis: str, distance_mm: float, feed_mm_min: float) -> str:
     return f"$J=G91 G21 {axis}{distance_mm:.3f} F{feed_mm_min:g}"
 
 
+def cmd_set_work_custom(
+    x_mm: float | None = None,
+    y_mm: float | None = None,
+    z_mm: float | None = None,
+) -> str:
+    """G10 L20 P1 with arbitrary X/Y/Z target work-coordinate values.
+
+    Uses GRBL's "set work coordinate by current machine position" mode:
+    after this command, GRBL adjusts WCS-1 so that wherever the bit
+    physically is right now corresponds to the supplied (x, y, z) in
+    work coordinates. Omitted axes are left unchanged.
+
+    Always prefixes G21 (mm) so the values are interpreted as millimetres
+    regardless of any prior G20 (inches) modal state.
+    """
+    parts: list[str] = []
+    if x_mm is not None:
+        parts.append(f"X{x_mm:.3f}")
+    if y_mm is not None:
+        parts.append(f"Y{y_mm:.3f}")
+    if z_mm is not None:
+        parts.append(f"Z{z_mm:.3f}")
+    if not parts:
+        return ""
+    return "G21 G10 L20 P1 " + " ".join(parts)
+
+
 # Human-readable error/alarm names — full GRBL list.
 
 ERROR_MESSAGES = {
