@@ -366,12 +366,12 @@ class MachineWorker(QObject):
             line = self._serial.read_line()
             if not line:
                 break
-            # Status reports (5 Hz polling) would flood the log — skip
-            # them. Anything else (ok / error / ALARM / [MSG:] / setting
-            # responses / welcome banners) is interesting.
-            if not (line.startswith("<") and line.endswith(">")):
-                run_log.log_rx(line)
             if line.startswith("<") and line.endswith(">"):
+                # Status reports get their own [status] tag so users can
+                # share them for position-tracking debugging without us
+                # having to enable a debug mode. They're frequent (5 Hz)
+                # but each is one short line — readable.
+                run_log.log_status(line)
                 status = parse_status(line)
                 if status is not None:
                     # Cache fresh WCO when GRBL reports one; otherwise inject
@@ -393,6 +393,8 @@ class MachineWorker(QObject):
                         self._pending_tool_change_bit = None
                         self.toolChangeRequired.emit(bit)
                 continue
+            # Non-status line — log to [rx] for the run log.
+            run_log.log_rx(line)
             resp = parse_response(line)
             # Streaming uses character counting — every 'ok' / 'error' frees
             # one in-flight line slot in the GRBL serial buffer.

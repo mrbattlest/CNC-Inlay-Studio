@@ -161,6 +161,13 @@ def log_event(message: str) -> None:
     _write(f"{_now()} [event] {message}")
 
 
+def log_status(line: str) -> None:
+    """A GRBL status report (``<...>``). Bulky but essential for
+    debugging position-tracking bugs. Tagged ``[status]`` so they can
+    be grep'd in or out as needed."""
+    _write(f"{_now()} [status] {line.rstrip()}")
+
+
 def log_error(message: str) -> None:
     """An exception or worker-side error string."""
     _write(f"{_now()} [error] {message}")

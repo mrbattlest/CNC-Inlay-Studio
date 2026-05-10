@@ -3208,8 +3208,32 @@ class MainWindow(QMainWindow):
         wpos = status.effective_wpos
         if wpos is None:
             return
-        endmill = self._controls.current_endmill()
-        bit_d = endmill.diameter_mm if endmill else 3.0
+
+        # Jump-detector for the run log — flag any consecutive WPos
+        # that moved more than 25 mm between two 200 ms status reports
+        # (250 mm/s = way faster than any reasonable cut feed and faster
+        # than typical rapid traverse on hobbyist CNC). When this fires
+        # repeatedly, WCO is desyncing or GRBL is reporting inconsistent
+        # frames. The user can share their run log around the timestamps
+        # of these warnings to give us a precise diagnostic trail.
+        prev = getattr(self, "_last_wpos_for_jump_check", None)
+        if prev is not None:
+            dx = wpos.x - prev[0]; dy = wpos.y - prev[1]; dz = wpos.z - prev[2]
+            dist = (dx * dx + dy * dy + dz * dz) ** 0.5
+            if dist > 25.0:
+                from cnc_inlay.control import run_log
+                run_log.log_event(
+                    f"suspicious wpos jump: {dist:.1f} mm "
+                    f"({prev[0]:.2f},{prev[1]:.2f},{prev[2]:.2f}) → "
+                    f"({wpos.x:.2f},{wpos.y:.2f},{wpos.z:.2f})"
+                )
+        self._last_wpos_for_jump_check = (wpos.x, wpos.y, wpos.z)
+
+        # Cone bit_diameter — use the bit ACTUALLY in use right now.
+        # On multi-bit jobs the V-bit pass uses a tiny diameter tip but
+        # current_endmill() returns the FINISHING flat endmill, which
+        # made the cone appear visually wrong-sized during V-bit cuts.
+        bit_d = self._current_streaming_bit_diameter_mm()
         if self._streaming_side == "pocket":
             self._pocket_canvas2d.set_machine_position(wpos.x, wpos.y, wpos.z, bit_d)
             self._pocket_canvas3d.set_machine_position(wpos.x, wpos.y, wpos.z, bit_d)
@@ -3231,6 +3255,39 @@ class MainWindow(QMainWindow):
             # in self._surfacing_bit_diameter_mm when the plan is pushed.
             sd = getattr(self, "_surfacing_bit_diameter_mm", 6.0)
             self._surfacing_canvas3d.set_machine_position(wpos.x, wpos.y, wpos.z, sd)
+
+    def _current_streaming_bit_diameter_mm(self) -> float:
+        """Return the diameter of the bit GRBL is currently cutting with,
+        for sizing the live position cone.
+
+        Multi-bit jobs use the V-bit (~3 mm tip), then a finishing
+        endmill, then optional roughing endmills, then the V-bit again
+        on the wall pass. ``current_endmill()`` only knows the finishing
+        bit — useless for the V-bit pass — so we look up the bit via
+        the streamer's last-passed tool-change marker.
+        """
+        if self._streaming_side == "surfacing":
+            return getattr(self, "_surfacing_bit_diameter_mm", 6.0)
+        # Look up the bit by name from the most-recent tool-change
+        # marker the streamer has passed. Fallback to the finishing
+        # endmill (current behaviour) if we can't resolve.
+        try:
+            cursor = self._controller._worker._streamer.cursor  # type: ignore[attr-defined]
+            tc_map = self._controller._worker._streamer.tool_change_at  # type: ignore[attr-defined]
+            current_bit_name: str | None = None
+            for line_idx in sorted(tc_map.keys()):
+                if line_idx <= cursor:
+                    current_bit_name = tc_map[line_idx]
+                else:
+                    break
+            if current_bit_name and self._bits:
+                for b in self._bits:
+                    if b.name == current_bit_name:
+                        return b.diameter_mm
+        except Exception:
+            pass
+        endmill = self._controls.current_endmill()
+        return endmill.diameter_mm if endmill else 3.0
 
     # ----------------------------------------------------------- setup guide
 
