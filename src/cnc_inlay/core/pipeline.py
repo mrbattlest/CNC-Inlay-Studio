@@ -993,13 +993,22 @@ def _generate_plug_side(
     # these angled walls mate with the pocket's V-walls and wedge tight.
     if vbit is not None and vbit.type == "vbit":
         from cnc_inlay.toolpath.vbit_walls import compute_vbit_wall_chains
-        smallest_prev_d = sequence[-1].diameter_mm if sequence else 0.0
+        # NB: do NOT pass prev_bit_diameter_mm on the plug side. The
+        # pocket V-bit centerline sits INSIDE the cleared cavity (in
+        # air), so early passes genuinely cut air and the air-cutting
+        # skip optimisation introduced in v1.1.9 is safe. The plug
+        # V-bit centerline sits INSIDE the plug-feature WOOD (the
+        # material that becomes the inlay), so every pass — even the
+        # shallowest — removes plug material to form the bevel.
+        # Skipping to first-contact depth on the plug means the first
+        # pass plunges to that depth in one go and tries to shear off
+        # a wedge much thicker than the bit can handle, ruining the
+        # cut.
         vchains = compute_vbit_wall_chains(
             mirrored,
             angle_deg=vbit.angle_deg,
             depth_mm=plug_depth,
             pass_depth_mm=params.pass_depth_mm,
-            prev_bit_diameter_mm=smallest_prev_d,
         )
         if vchains:
             bit_chains = list(bit_chains) + [(vbit, vchains)]

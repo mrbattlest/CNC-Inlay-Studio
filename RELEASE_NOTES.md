@@ -1,15 +1,23 @@
-- Plug-side finer bits no longer chase residual into the outer
-  stock corners. The "priority region" that restricts smaller bits
-  to the area near the design feature was previously sized by
-  ``boundary_offset_mm`` (the plug-profile margin parameter,
-  typically 15 mm). On stock that's only a few mm wider than the
-  design, that 15 mm band reached all the way into the outer stock
-  corners and forced the smallest bit (e.g. 1 mm) to spend extra
-  passes polishing waste material — even though it's just air to
-  the outside of the eventual plug.
-- The priority band is now sized to the LARGEST roughing bit's
-  diameter — geometrically that's the maximum residual width the
-  largest bit can leave behind along the design boundary. Smaller
-  bits clean up that band; the outer-corner stock waste is left
-  with the largest bit's natural-radius residual (which gets
-  discarded anyway when the plug is cut out).
+- **Critical fix to v1.1.9's V-bit optimisation:** the air-cutting
+  skip is correct on the pocket side but WRONG on the plug side,
+  and v1.1.9 applied it to both. Result: the plug V-bit pass
+  plunged straight to the first-contact depth on its first pass
+  and tried to shear a thick wedge of plug-feature wood in one go,
+  cutting too aggressively against the wall.
+
+  Why the geometry differs:
+    • **Pocket** — the V-bit centerline sits INSIDE the cleared
+      cavity, in air. At intermediate depths the cone is fully
+      surrounded by air; only at full depth does its surface-level
+      edge reach the wood wall. Early passes genuinely cut air, so
+      skipping them is safe.
+    • **Plug** — the V-bit centerline sits INSIDE the plug-feature
+      itself, in solid wood (the material that becomes the inlay).
+      Every pass, from the shallowest, removes plug material to
+      form the bevel. Skipping early passes means the first pass
+      shears off too much in one go.
+
+  v1.1.15 disables the optimisation on the plug side. Plug V-bit
+  passes now step down from the surface in pass-depth increments
+  the way they always did before v1.1.9. Pocket side still benefits
+  from the air-cutting skip.
