@@ -3041,12 +3041,17 @@ class MainWindow(QMainWindow):
         self._control_panel.set_stream_status(text)
 
     def _on_stream_completed(self) -> None:
+        # Capture the side BEFORE clearing it — we need it for the
+        # celebration dialog message below.
+        finished_side = self._streaming_side
         self._control_panel.set_streaming(False)
         self._stream_clock.stop()
+        elapsed_seconds = 0.0
         elapsed_str = ""
         if self._stream_start_time is not None:
             import time
-            elapsed_str = f" in {_format_clock(time.monotonic() - self._stream_start_time)}"
+            elapsed_seconds = time.monotonic() - self._stream_start_time
+            elapsed_str = f" in {_format_clock(elapsed_seconds)}"
         self._stream_start_time = None
         self._control_panel.set_stream_progress(0, 0)
         self._control_panel.set_stream_status(f"Idle — last run completed ✓{elapsed_str}")
@@ -3055,6 +3060,59 @@ class MainWindow(QMainWindow):
             c.clear_machine_position()
         self._sleep_inhibitor.release()
         self._set_status(f"Cut completed{elapsed_str}.")
+        # Celebration dialog — pops on every cut completion (Pocket /
+        # Plug / Surfacing each get their own). Includes total run
+        # time and the next-step nudge so the user knows what's left
+        # before the inlay is finished.
+        self._show_completion_celebration(finished_side, elapsed_seconds)
+
+    def _show_completion_celebration(
+        self, finished_side: str | None, elapsed_seconds: float,
+    ) -> None:
+        """Pop a modal congratulations dialog when a cut completes. The
+        side determines the next-step hint (Pocket → swap to plug stock;
+        Plug → glue + clamp; Surfacing → done!)."""
+        side_label = {
+            "pocket": "Pocket",
+            "plug": "Plug",
+            "surfacing": "Surfacing pass",
+        }.get(finished_side or "", "Cut")
+        next_step = {
+            "pocket": (
+                "<p style='margin-top:14px;'><b>Next:</b> mount your contrasting "
+                "(plug) wood, re-zero X / Y / Z for the new stock, click "
+                "<b>Plug</b> and ▶ <b>Run on Machine</b>.</p>"
+            ),
+            "plug": (
+                "<p style='margin-top:14px;'><b>Next:</b> glue the plug into "
+                "the pocket, clamp until the glue cures, then plane / sand "
+                "(or use the <b>Surface plug backing</b> tool) to bring the "
+                "back flush.</p>"
+            ),
+            "surfacing": (
+                "<p style='margin-top:14px;'><b>Done.</b> Pop the panel out "
+                "of the clamps and admire your inlay.</p>"
+            ),
+        }.get(finished_side or "", "")
+        elapsed_str = _format_clock(elapsed_seconds) if elapsed_seconds > 0 else "—"
+        body = (
+            f"<h2 style='margin:0;'>🎉 {side_label} complete!</h2>"
+            f"<p style='margin-top:10px; color:#9aa0a6;'>"
+            f"Run time: <b style='color:#e8e8ea;'>{elapsed_str}</b></p>"
+            f"{next_step}"
+        )
+        box = QMessageBox(self)
+        box.setWindowTitle(f"{side_label} complete")
+        box.setIcon(QMessageBox.Information)
+        box.setTextFormat(Qt.RichText)
+        box.setText(body)
+        box.setStandardButtons(QMessageBox.Ok)
+        # Raise + activate so the dialog is visible even if the app is
+        # in the background — the user often steps away from the
+        # screen during long cuts.
+        self.raise_()
+        self.activateWindow()
+        box.exec()
 
     def _on_stream_aborted(self, reason: str) -> None:
         self._control_panel.set_streaming(False)
