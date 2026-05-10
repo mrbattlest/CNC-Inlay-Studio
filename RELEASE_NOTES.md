@@ -1,17 +1,32 @@
-- **Critical V-bit / tool-change cut-quality fix.** When a section
-  began after a tool change (typical V-bit-after-endmill flow), the
-  emitter assumed the bit was already at safe Z because the previous
-  section ended with a lift. After M0, though, the operator
-  re-zeroes Z by jogging the new bit's tip down to the wood surface
-  — so when the streamer resumes, the bit is sitting at work-Z = 0
-  with the spindle spinning up. The very first move (G0 X Y to the
-  start of the first chain) then dragged the spinning bit
-  laterally **across the wood at surface level**, gouging a slanted
-  cut into the workpiece on the way to its proper start position.
-- Each section now emits an unconditional ``G0 Z<safe_z>`` lift
-  immediately after the M3 spindle-on + 3-second ramp-up dwell,
-  before any X/Y motion. This guarantees the bit is clear of the
-  wood before traversing to the first chain. The same-Z optimisation
-  that skips lift+rapid+plunge between adjacent passes within a
-  section is unaffected — only the very first move of each section
-  unconditionally lifts.
+- **Critical V-bit geometry fix.** The V-bit centerline path was
+  incorrectly inset from the design boundary by ``lateral_reach``
+  (= depth × tan(half_angle)). The intent was "the cone's outer
+  edge at the surface kisses the boundary at full depth", but the
+  consequence was that the cone sat entirely inside the cleared
+  cavity (or cleared complement on the plug) at every depth,
+  removing essentially zero wood — only tangentially kissing the
+  wall at z = 0. Users observed this as "the V-bit barely touched
+  the wood".
+
+  Per the standard V-bit inlay technique (Vectric / Whiteside /
+  Amana), **the V-bit's TIP follows the design boundary at full
+  depth, with no inset**. The cone's flank then extends
+  ``lateral_reach`` outward at the surface, sweeping a wedge of
+  wood from the wall and leaving a clean angled surface from
+  ``(boundary + lateral_reach, surface)`` down to
+  ``(boundary, floor)``. Whether that wedge is on the outside of
+  the boundary (pocket — wood is outside) or the inside (plug —
+  wood is inside) is determined automatically by which side has
+  wood; the cone simply doesn't cut where there isn't anything to
+  cut.
+
+  This fix applies to both pocket and plug V-bit passes. The
+  ``is_plug`` parameter is retained for API compatibility but no
+  longer affects the centerline.
+
+- The v1.1.9 air-cutting-skip optimisation has also been removed —
+  with the corrected centerline, the cone reaches into wood at
+  every depth, so there are no air-cutting passes to skip. The full
+  surface-down pass schedule is exactly what's wanted now: each
+  pass shaves a thin, clean slice of the wall, progressively
+  deepening the bevel.

@@ -190,27 +190,39 @@ def compute_vbit_wall_chains(
     if lateral_reach <= 0:
         return []
 
-    # The V-bit's centerline path is the design boundary offset by
-    # ``lateral_reach``. The DIRECTION of the offset depends on which
-    # side we're cutting:
+    # The V-bit's centerline path is the DESIGN BOUNDARY itself — no
+    # inset, no outset. This is the standard V-bit inlay geometry
+    # (Vectric / Whiteside / Amana datasheets all agree): the bit's
+    # TIP follows the boundary at full depth, the cone's flank
+    # extends ``lateral_reach`` outward at the surface, and the cone
+    # sweeps a wedge of wood away from the wall to leave a clean
+    # angled surface from ``(boundary + lateral_reach, z=0)`` down to
+    # ``(boundary, z=-depth)``.
     #
-    #   * Pocket — design polygon represents the cavity. We INSET (negative
-    #     offset) so the centerline is inside the cleared cavity (in air).
-    #     The cone's flank sweeps the wedge of wood OUTSIDE the design
-    #     boundary, creating an inward-sloping cavity wall.
+    # Whether the wedge is on the OUTSIDE of the boundary (pocket
+    # case — wood is outside the design polygon) or the INSIDE (plug
+    # case — wood is inside the mirrored plug-feature polygon) is
+    # determined by which side actually has wood, not by where we
+    # place the centerline. The cone naturally cuts only where it
+    # overlaps wood; the cleared-air side just has nothing to remove.
     #
-    #   * Plug — design polygon represents the plug feature itself. We
-    #     OUTSET (positive offset) so the centerline is in the cleared
-    #     complement (in air, outside the plug). The cone's flank sweeps
-    #     the wedge of wood OUTSIDE the plug boundary (which is wood
-    #     that gets discarded as waste anyway), but more importantly
-    #     the cone's profile leaves the plug with an outward-sloping
-    #     wall that mates correctly with the pocket after the stock is
-    #     flipped.
-    offset = +lateral_reach if is_plug else -lateral_reach
-    centerline = offset_polygon(geom, offset)
+    # Earlier versions inset the centerline by ``lateral_reach`` (and
+    # outset for the plug after the v1.1.16 fix). That positioning
+    # put the centerline inside the cleared cavity / cleared
+    # complement, where the cone's flank only kissed the boundary
+    # tangentially at the surface and removed essentially zero wood
+    # — the "V-bit barely touched the wood" symptom users reported.
+    centerline = offset_polygon(geom, 0.0)
+    if centerline is None or centerline.is_empty:
+        # Fall back to the input polygon directly when buffer(0) is a
+        # no-op or chokes on degenerate geometry.
+        centerline = geom
     if centerline is None or centerline.is_empty:
         return []
+    # `is_plug` is retained as a parameter for API compatibility but
+    # no longer affects the centerline path — the cone-cuts-where-the-
+    # wood-is invariant handles both sides automatically.
+    _ = is_plug
 
     chains: list[Chain] = []
     z = -depth_mm
@@ -230,22 +242,17 @@ def compute_vbit_wall_chains(
                 chains.append([(x, y, z) for x, y in ring])
 
     if pass_depth_mm > 0:
-        # Skip air-cutting passes when we know what bit ran before.
-        # 0.10 mm safety margin so the first real pass takes a tiny
-        # nibble rather than landing exactly at the wood surface
-        # (which would give the bit no engagement to break the chip).
-        if prev_bit_diameter_mm > 0:
-            start_depth = max(
-                0.0,
-                first_contact_depth_mm(angle_deg, depth_mm, prev_bit_diameter_mm)
-                - 0.10,
-            )
-            if start_depth > 0:
-                chains = _split_passes_starting_at(
-                    chains, pass_depth_mm, start_depth
-                )
-            else:
-                chains = split_into_passes(chains, pass_depth_mm)
-        else:
-            chains = split_into_passes(chains, pass_depth_mm)
+        # With the corrected centerline (= boundary, not inset by
+        # lateral_reach), the cone's flank reaches into wood at every
+        # depth — there are no air-cutting passes to skip. The
+        # ``prev_bit_diameter_mm`` parameter is retained for API
+        # compatibility but no longer drives a "first contact" skip.
+        # Earlier versions enabled that skip on the (incorrect)
+        # assumption that early passes were pure air-cuts; with the
+        # geometry fixed, every pass shaves a real slice of the wall,
+        # and stepping down from the surface in pass-depth increments
+        # is exactly what we want for a clean, progressively-deepening
+        # bevel.
+        _ = prev_bit_diameter_mm
+        chains = split_into_passes(chains, pass_depth_mm)
     return chains
