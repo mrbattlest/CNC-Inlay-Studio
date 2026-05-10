@@ -67,6 +67,7 @@
   { "name": "Imperial 1/2\" (12.700 mm) surfacing bit (1/4\" shank, 2-flute)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 12.7, "max_rpm": 14000, "flutes": 2 },
   { "name": "Imperial 1/2\" (12.700 mm) surfacing bit (1/4\" shank, 4-flute)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 12.7, "max_rpm": 14000, "flutes": 4 },
   { "name": "Imperial 5/8\" (15.875 mm) surfacing bit (1/4\" shank, 2-flute)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 15.875, "max_rpm": 12000, "flutes": 2 },
+  { "name": "Imperial 3/4\" (19.050 mm) surfacing bit (1/4\" shank, 2-flute)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 19.05, "max_rpm": 14000, "flutes": 2 },
   { "name": "Imperial 3/4\" (19.050 mm) surfacing bit (1/4\" shank, insert)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 19.05, "max_rpm": 12000, "flutes": 3 },
   { "name": "Imperial 3/4\" (19.050 mm) surfacing bit (1/4\" shank, 4-flute solid)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 19.05, "max_rpm": 12000, "flutes": 4 },
   { "name": "Imperial 1\" (25.400 mm) surfacing bit (1/4\" shank, insert)", "type": "surfacing", "angle_deg": 180, "shank_mm": 6.35, "diameter_mm": 25.4, "max_rpm": 12000, "flutes": 3 },

@@ -111,6 +111,7 @@ def compute_vbit_wall_chains(
     depth_mm: float,
     pass_depth_mm: float = 0.0,
     prev_bit_diameter_mm: float = 0.0,
+    is_plug: bool = False,
 ) -> list[Chain]:
     """Generate V-bit chains for the angled-wall finish pass.
 
@@ -129,14 +130,24 @@ def compute_vbit_wall_chains(
             which the V-bit first contacts wood — passes shallower than
             that are pure air-cuts and wasted machine time, so we skip
             straight down to first contact instead of stepping there
-            ``pass_depth_mm`` at a time. 0 disables the optimisation
-            (full surface-down pass schedule).
+            ``pass_depth_mm`` at a time. 0 disables the optimisation.
+        is_plug: True when emitting the plug-side bevel pass. Flips the
+            centerline offset so the V-bit traces a path OUTSIDE the
+            plug feature (in the cleared complement) rather than inside
+            it. With centerline outside, the bit's cone tip plunges
+            into the cleared floor and its flank sweeps the wedge of
+            wood OUTSIDE the plug boundary — producing a wall that
+            slopes outward going down (wider at the floor, narrower at
+            the surface). When the plug stock is then flipped face-down
+            and pressed into the pocket, those walls become inward-
+            sloping from the top, mating exactly with the pocket's
+            inward-sloping V-walls.
 
     Returns:
-        List of closed-loop chains following the design boundary inset
-        by the V-bit's lateral reach. Empty when the bit can't reach
-        the floor without self-overlap (i.e. pocket narrower than
-        2 × lateral_reach).
+        List of closed-loop chains following the design boundary
+        offset by the V-bit's lateral reach (inward for pocket, outward
+        for plug). Empty when the offset operation fails (e.g. pocket
+        narrower than 2 × lateral_reach).
     """
     if depth_mm <= 0:
         return []
@@ -144,10 +155,25 @@ def compute_vbit_wall_chains(
     if lateral_reach <= 0:
         return []
 
-    # The V-bit's centerline path is the design boundary inset by the
-    # lateral reach: at that offset, the bit's outer edge at Z=0 just
-    # kisses the original boundary while the tip plunges to -depth_mm.
-    centerline = offset_polygon(geom, -lateral_reach)
+    # The V-bit's centerline path is the design boundary offset by
+    # ``lateral_reach``. The DIRECTION of the offset depends on which
+    # side we're cutting:
+    #
+    #   * Pocket — design polygon represents the cavity. We INSET (negative
+    #     offset) so the centerline is inside the cleared cavity (in air).
+    #     The cone's flank sweeps the wedge of wood OUTSIDE the design
+    #     boundary, creating an inward-sloping cavity wall.
+    #
+    #   * Plug — design polygon represents the plug feature itself. We
+    #     OUTSET (positive offset) so the centerline is in the cleared
+    #     complement (in air, outside the plug). The cone's flank sweeps
+    #     the wedge of wood OUTSIDE the plug boundary (which is wood
+    #     that gets discarded as waste anyway), but more importantly
+    #     the cone's profile leaves the plug with an outward-sloping
+    #     wall that mates correctly with the pocket after the stock is
+    #     flipped.
+    offset = +lateral_reach if is_plug else -lateral_reach
+    centerline = offset_polygon(geom, offset)
     if centerline is None or centerline.is_empty:
         return []
 
