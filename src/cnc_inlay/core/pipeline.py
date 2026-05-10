@@ -941,15 +941,34 @@ def _generate_plug_side(
         endmill, params.plug_roughing_bits, bit_library
     )
     plug_depth = params.pocket_depth_mm + params.glue_gap_mm
-    # Priority region for finer-bit cleanup on the plug side: the
-    # boundary_offset band around the mirrored design feature. Everything
-    # beyond this band (e.g. the rectangular stock's outer corners) gets
-    # the largest roughing bit's natural-radius residual left as-is —
-    # those corners aren't part of the inlay surface, so swapping to a
-    # 1 mm finishing bit just to clean them up is wasted time.
+    # Priority region for finer-bit cleanup on the plug side: a band
+    # around the mirrored design feature, sized to the LARGEST roughing
+    # bit's diameter. After the largest bit clears the complement, the
+    # residual it couldn't reach is geometrically bounded — at most one
+    # bit-diameter wide along the design boundary (concave corners,
+    # tight necks). Smaller bits only need to clean up THAT zone.
+    #
+    # We previously used `boundary_offset_mm` for this width, but that
+    # parameter is meant for the plug-profile margin (extra wood around
+    # the feature for clamping) — typically 15 mm or more. On stock
+    # that's only a few mm wider than the design, a 15 mm band reaches
+    # all the way into the outer stock corners and forces the 1 mm
+    # finishing bit to chase residual in pure-waste territory. Tying
+    # the priority width to the largest bit's diameter (× 1.5 for a
+    # small safety margin) keeps finer bits focused on the design's
+    # cleanup zone where they actually matter.
+    largest_bit_d = sequence[0].diameter_mm if sequence else 6.0
+    # Width = one full largest-bit diameter, no extra multiplier. That
+    # corresponds geometrically to the maximum residual width the
+    # largest bit can leave behind along the design boundary, and on
+    # tight stock (e.g. 50 × 127 mm stock around a 36 × 110 mm design,
+    # 7 mm margin) keeps the priority band from reaching into the
+    # outer-stock corner zone where finer bits would just be polishing
+    # waste material.
+    priority_band_width = largest_bit_d
     plug_priority: Polygon | MultiPolygon | None = None
     try:
-        envelope = mirrored.buffer(params.boundary_offset_mm)
+        envelope = mirrored.buffer(priority_band_width)
         intersected = envelope.intersection(complement).buffer(0)
         if not intersected.is_empty:
             plug_priority = intersected

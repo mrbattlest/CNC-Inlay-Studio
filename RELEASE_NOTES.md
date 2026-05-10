@@ -1,16 +1,15 @@
-- **Critical follow-up to v1.1.12:** the cached toolpath restored
-  on project open didn't honour pipeline bugfixes between releases.
-  Cache signatures hashed inputs (design / params / materials / bits)
-  but not the app version, so a cache produced by buggy v1.1.11 was
-  cleanly restored by fixed v1.1.12 — same inputs, same hash, no
-  invalidation. Users who never clicked Preview after the v1.1.12
-  update would keep streaming the stale (still-cuts-through-the-
-  letter) plug G-code.
-- The cache signature now includes ``cnc_inlay.__version__``, so
-  any future pipeline change (bugfix or otherwise) auto-invalidates
-  every prior cache. Updating the app forces a Preview re-run on
-  next open.
-- When a saved cache is rejected (because of an app update or any
-  changed input), the user now gets an explicit dialog telling them
-  to click Preview Toolpaths before Run on Machine — instead of the
-  silent status-bar nudge that v1.1.12 used.
+- Plug-side finer bits no longer chase residual into the outer
+  stock corners. The "priority region" that restricts smaller bits
+  to the area near the design feature was previously sized by
+  ``boundary_offset_mm`` (the plug-profile margin parameter,
+  typically 15 mm). On stock that's only a few mm wider than the
+  design, that 15 mm band reached all the way into the outer stock
+  corners and forced the smallest bit (e.g. 1 mm) to spend extra
+  passes polishing waste material — even though it's just air to
+  the outside of the eventual plug.
+- The priority band is now sized to the LARGEST roughing bit's
+  diameter — geometrically that's the maximum residual width the
+  largest bit can leave behind along the design boundary. Smaller
+  bits clean up that band; the outer-corner stock waste is left
+  with the largest bit's natural-radius residual (which gets
+  discarded anyway when the plug is cut out).
