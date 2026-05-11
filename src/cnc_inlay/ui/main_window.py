@@ -690,8 +690,15 @@ class MainWindow(QMainWindow):
         # we've now hit twice) — which would silently drop both their
         # menu visibility and their `triggered` signal.
         help_menu = menu.addMenu("&Help")
+        # NoRole on About too: AboutRole auto-promotes to the macOS
+        # application menu, but PySide6 6.x sometimes routes those
+        # clicks through the system about-dialog handler (which expects
+        # version info from Info.plist) instead of firing our triggered
+        # signal — making the click look unresponsive. NoRole keeps the
+        # action under Help where it was added and guarantees the
+        # triggered signal reaches _on_show_about.
         about_act = QAction("About CNC Inlay Studio", self)
-        about_act.setMenuRole(QAction.AboutRole)  # macOS app-menu promotion
+        about_act.setMenuRole(QAction.NoRole)
         about_act.triggered.connect(self._on_show_about)
         help_menu.addAction(about_act)
         help_menu.addSeparator()

@@ -1,9 +1,9 @@
-- New **Skip pocket V-bit (plug only)** checkbox in the sidebar
-  under the Wall finish dropdown. When enabled, the V-bit pass is
-  skipped on the pocket but still runs on the plug. Use this on
-  designs with thin features adjacent to a cavity wall (a dog's
-  collar in a multi-feature silhouette, etc.) where the V-bit's
-  surface-level cone widening would erode the thin section. Pocket
-  walls stay vertical (flat-endmill finish only); plug still gets
-  its angled-wall finish so the visible joint at the surface is a
-  sharp clean line. Persisted in the .inlay project file.
+- Fixes Help → About CNC Inlay Studio doing nothing. The About
+  action used Qt's ``AboutRole``, which auto-promotes the item to
+  the bold macOS application menu — but PySide6 6.x sometimes
+  routes those clicks through the system about-dialog handler
+  (which expects version metadata from Info.plist) instead of
+  firing our ``triggered`` signal, so the click looked
+  unresponsive. About now uses ``NoRole`` like every other Help
+  item; it lives only under the Help menu and reliably opens the
+  custom dialog.
