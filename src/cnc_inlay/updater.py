@@ -194,8 +194,15 @@ def check_for_update_async(on_done: Callable[["UpdateCheckResult"], None]) -> No
         result = check_for_update()
         try:
             on_done(result)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Don't fail silently — print so the issue surfaces in
+            # console / Console.app instead of leaving the user with a
+            # menu click that did literally nothing.
+            import sys
+            print(
+                f"[updater] on_done callback failed: {exc!r}",
+                file=sys.stderr,
+            )
 
     threading.Thread(target=_run, daemon=True).start()
 

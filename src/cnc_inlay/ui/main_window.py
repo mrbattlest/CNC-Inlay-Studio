@@ -760,8 +760,19 @@ class MainWindow(QMainWindow):
         # receiver self in main thread) queues delivery to the main-thread
         # event loop so the slot runs there. Without this bridge, a worker
         # thread touching widgets crashes the app on macOS.
-        self._updaterResultLoud.connect(self._on_updater_result_loud)
-        self._updaterResultQuiet.connect(self._on_updater_result_quiet)
+        # Force QueuedConnection — the updater check runs on a non-Qt
+        # threading.Thread and emits these signals from there. With the
+        # default AutoConnection, Qt sometimes falls back to
+        # DirectConnection (calls the slot on the worker thread) when
+        # it can't classify the source thread, and QMessageBox from a
+        # non-main thread silently fails. QueuedConnection forces the
+        # slot onto the main thread's event loop.
+        self._updaterResultLoud.connect(
+            self._on_updater_result_loud, Qt.QueuedConnection,
+        )
+        self._updaterResultQuiet.connect(
+            self._on_updater_result_quiet, Qt.QueuedConnection,
+        )
 
         # Simulator wiring.
         self._control_panel.simulatePocketRequested.connect(
