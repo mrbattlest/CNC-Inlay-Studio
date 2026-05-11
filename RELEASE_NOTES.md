@@ -1,12 +1,11 @@
-- Fixes Help → Check for Updates doing nothing when the app is
-  already on the latest version. The updater check runs on a
-  non-Qt threading.Thread and signals back to the main thread; the
-  default AutoConnection sometimes fell back to DirectConnection
-  and tried to open the result dialog on the worker thread, where
-  QMessageBox silently fails. The signal connection now uses an
-  explicit ``Qt.QueuedConnection`` so the dialog always opens on
-  the main thread. You'll now see the proper "You're up to date"
-  dialog (or "Update available", or "Check failed") on every
-  click.
-- Updater also no longer swallows callback errors silently — they
-  print to stderr so future failures are visible in Console.app.
+- The On Machine box no longer shows both "Run Pocket" and
+  "Run Plug" buttons at the same time. The box now has just two
+  buttons — **👁 Dry Run** and **▶ Run on Machine** — whose labels
+  update to match the active preview tab. Switching the preview
+  from Pocket → Plug retitles the buttons to "Dry Plug" / "Run
+  Plug" (and vice versa). Same auto-sync pattern that already
+  applies to the scrub-bar timeline.
+- Eliminates the failure mode where you could be looking at the
+  Pocket preview but accidentally click "Run Plug" and stream the
+  wrong G-code. Now the visible buttons always operate on the side
+  you're looking at.

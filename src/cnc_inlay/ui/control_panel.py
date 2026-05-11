@@ -68,10 +68,12 @@ class ControlPanel(QWidget):
     simulateStopRequested = Signal()
     simulateSpeedChanged = Signal(float)
     setupGuideRequested = Signal()
-    runPocketRequested = Signal()
-    runPlugRequested = Signal()
-    dryRunPocketRequested = Signal()
-    dryRunPlugRequested = Signal()
+    # Side-aware run signals — the side argument is whichever side is
+    # currently active (driven by the main-area preview tab via
+    # show_scrub_side). Replaces the four side-specific signals so the
+    # On Machine box only ever shows the side the user is looking at.
+    runRequested = Signal(str)        # side: "pocket" or "plug"
+    dryRunRequested = Signal(str)     # side: "pocket" or "plug"
     # Run from a specific G-code line (selected via the scrub bar). The
     # side ("pocket" or "plug") plus the start_line index. Host opens a
     # confirmation dialog and calls start_stream(start_line=N) on the
@@ -503,42 +505,34 @@ class ControlPanel(QWidget):
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(3)
 
-        # 2×2 grid: dry runs on top row, real runs on bottom row.
+        # Two side-aware buttons (Dry Run + Run on Machine). The label
+        # updates based on which preview tab is active — Pocket tab
+        # shows "▶ Run Pocket", Plug tab shows "▶ Run Plug" — so the
+        # operator never sees both at once and can't accidentally
+        # stream the wrong side. Default text "Run / Dry Run" is shown
+        # before any tab is selected (or on Finished / Surfacing tabs
+        # that don't correspond to a streamable side).
         grid = QGridLayout()
         grid.setSpacing(4)
 
-        self._dry_pocket_btn = QPushButton("👁 Dry Pocket")
-        self._dry_plug_btn = QPushButton("👁 Dry Plug")
-        self._run_pocket_btn = QPushButton("▶ Run Pocket")
-        self._run_plug_btn = QPushButton("▶ Run Plug")
+        self._dry_btn = QPushButton("👁 Dry Run")
+        self._run_btn = QPushButton("▶ Run on Machine")
 
-        self._dry_pocket_btn.setToolTip(
-            "Run the pocket toolpath at +safe Z (no plunge, no cutting). "
+        self._dry_btn.setToolTip(
+            "Run the active side's toolpath at +safe Z (no plunge, no cutting). "
             "Use this BEFORE the real cut to verify XY alignment and Z-zero."
         )
-        self._dry_plug_btn.setToolTip(
-            "Run the plug toolpath at +safe Z (no plunge, no cutting). "
-            "Use this BEFORE the real cut to verify XY alignment and Z-zero."
-        )
-        self._run_pocket_btn.setToolTip(
-            "Stream the pocket G-code to the machine. Connect first and click Preview."
-        )
-        self._run_plug_btn.setToolTip(
-            "Stream the plug G-code to the machine. Connect first and click Preview."
+        self._run_btn.setToolTip(
+            "Stream the active side's G-code to the machine. Connect first and click Preview."
         )
 
-        self._dry_pocket_btn.clicked.connect(self.dryRunPocketRequested.emit)
-        self._dry_plug_btn.clicked.connect(self.dryRunPlugRequested.emit)
-        self._run_pocket_btn.clicked.connect(self.runPocketRequested.emit)
-        self._run_plug_btn.clicked.connect(self.runPlugRequested.emit)
-        for b in (self._dry_pocket_btn, self._dry_plug_btn,
-                  self._run_pocket_btn, self._run_plug_btn):
+        self._dry_btn.clicked.connect(self._on_dry_run_clicked)
+        self._run_btn.clicked.connect(self._on_run_clicked)
+        for b in (self._dry_btn, self._run_btn):
             b.setEnabled(False)
 
-        grid.addWidget(self._dry_pocket_btn, 0, 0)
-        grid.addWidget(self._dry_plug_btn, 0, 1)
-        grid.addWidget(self._run_pocket_btn, 1, 0)
-        grid.addWidget(self._run_plug_btn, 1, 1)
+        grid.addWidget(self._dry_btn, 0, 0)
+        grid.addWidget(self._run_btn, 0, 1)
         layout.addLayout(grid)
 
         # Coloured scrub bar replacing the old plain progress bar. Each
@@ -627,9 +621,10 @@ class ControlPanel(QWidget):
 
     def show_scrub_side(self, side: str) -> None:
         """Public — wired from MainWindow's main-tab change handler so
-        the scrub bar auto-tracks the active preview tab. Idempotent
-        and silent when the requested side has no registered program
-        (e.g. user is on the Finished or Surfacing tab)."""
+        the scrub bar AND the Run / Dry Run buttons auto-track the
+        active preview tab. Idempotent and silent when the requested
+        side has no registered program (e.g. user is on the Finished
+        or Surfacing tab)."""
         if side not in self._scrub_programs:
             return
         self._scrub_side = side
@@ -644,6 +639,11 @@ class ControlPanel(QWidget):
         self._run_from_cursor_btn.setEnabled(
             not self._streaming and self._controller.is_connected
         )
+        # Update the Dry Run / Run buttons to reflect the active side
+        # — single-side display avoids the operator accidentally
+        # streaming the wrong program.
+        self._dry_btn.setText(f"👁 Dry {side.title()}")
+        self._run_btn.setText(f"▶ Run {side.title()}")
 
     def _on_snap_to_next_bit(self) -> None:
         nxt = self._scrub_bar.next_bit_boundary(self._scrub_bar.scrub_line)
@@ -652,6 +652,14 @@ class ControlPanel(QWidget):
 
     def _on_run_from_cursor(self) -> None:
         self.runFromLineRequested.emit(self._scrub_side, self._scrub_bar.scrub_line)
+
+    def _on_dry_run_clicked(self) -> None:
+        if self._scrub_side:
+            self.dryRunRequested.emit(self._scrub_side)
+
+    def _on_run_clicked(self) -> None:
+        if self._scrub_side:
+            self.runRequested.emit(self._scrub_side)
 
     # ------------------------------------------------------------ console
 
@@ -863,8 +871,7 @@ class ControlPanel(QWidget):
     def set_run_available(self, has_result: bool) -> None:
         """Enable Run buttons when a Preview result exists AND the machine is connected."""
         connected = self._controller.is_connected
-        for btn in (self._run_pocket_btn, self._run_plug_btn,
-                    self._dry_pocket_btn, self._dry_plug_btn):
+        for btn in (self._run_btn, self._dry_btn):
             btn.setEnabled(has_result and connected)
         # Run-from-cursor is also gated on having a program loaded into
         # the scrub bar, not just having a result.
@@ -882,8 +889,7 @@ class ControlPanel(QWidget):
         self._streaming = streaming
         # Leaving tool-change-pause mode whenever streaming state changes.
         self._paused_for_tool_change = False
-        for btn in (self._run_pocket_btn, self._run_plug_btn,
-                    self._dry_pocket_btn, self._dry_plug_btn):
+        for btn in (self._run_btn, self._dry_btn):
             btn.setEnabled(not streaming and self._controller.is_connected)
         for btn in (
             self._xminus, self._xplus, self._yminus, self._yplus,

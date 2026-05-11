@@ -791,10 +791,12 @@ class MainWindow(QMainWindow):
         self._simulator.set_speed(10.0)
 
         # Run-on-machine wiring.
-        self._control_panel.runPocketRequested.connect(lambda: self._run_on_machine("pocket", dry_run=False))
-        self._control_panel.runPlugRequested.connect(lambda: self._run_on_machine("plug", dry_run=False))
-        self._control_panel.dryRunPocketRequested.connect(lambda: self._run_on_machine("pocket", dry_run=True))
-        self._control_panel.dryRunPlugRequested.connect(lambda: self._run_on_machine("plug", dry_run=True))
+        self._control_panel.runRequested.connect(
+            lambda side: self._run_on_machine(side, dry_run=False)
+        )
+        self._control_panel.dryRunRequested.connect(
+            lambda side: self._run_on_machine(side, dry_run=True)
+        )
         self._control_panel.streamPauseRequested.connect(self._controller.stream_pause)
         # On resume, clear the banner, hide the tool-change dialog, and re-
         # disable jog (cut is moving again).
