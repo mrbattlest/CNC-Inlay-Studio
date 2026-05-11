@@ -128,6 +128,19 @@ class InlayParams:
     # the plug only contacts the pocket at the top edge but the visible
     # joint is still a sharp clean line.
     skip_pocket_vbit: bool = False
+    # POCKET-only V-carve wall slack (mm). Buffers the design polygon
+    # outward by this amount before generating the V-carve toolpath,
+    # widening the resulting walls slightly so the plug doesn't bind
+    # on a tight cone-angle match. Per F-Engrave / Vectric inlay
+    # convention. 0.05–0.15 mm is typical; default 0.1 mm.
+    pocket_allowance_mm: float = 0.1
+    # PLUG-only Z offset (mm). Shifts the entire plug V-carve pass
+    # DEEPER by this amount so the plug stock stands proud of the
+    # pocket surface after pressing. Operator planes/sands flush after
+    # the glue cures, exposing a crisp inlay edge at the new surface.
+    # Vectric / F-Engrave call this "Surface Clearance". 1.5–3.0 mm
+    # is typical; default 2.5 mm (~0.1″, the Sienci Drapela value).
+    surface_clearance_mm: float = 2.5
 
 
 @dataclass

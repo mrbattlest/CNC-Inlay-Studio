@@ -1016,6 +1016,43 @@ class ControlsPanel(QWidget):
         self.skip_pocket_vbit_check.toggled.connect(self._on_param_change)
         bf.addRow(self.skip_pocket_vbit_check)
 
+        # Pocket allowance — small wall slack on the pocket V-carve so
+        # the plug doesn't bind on a tight cone-angle match. Plug side
+        # always uses 0 (cut to nominal).
+        self.pocket_allowance_spin = QDoubleSpinBox()
+        self.pocket_allowance_spin.setRange(0.0, 1.0)
+        self.pocket_allowance_spin.setDecimals(2)
+        self.pocket_allowance_spin.setSingleStep(0.05)
+        self.pocket_allowance_spin.setValue(0.1)
+        self.pocket_allowance_spin.setSuffix(" mm")
+        self.pocket_allowance_spin.setToolTip(
+            "POCKET-only V-carve wall slack. Buffers the design "
+            "outward by this amount before the V-carve, widening "
+            "the pocket walls slightly so the plug doesn't bind on "
+            "a tight angle match. 0.05–0.15 mm typical. Plug side "
+            "always uses 0 (cut to nominal)."
+        )
+        self.pocket_allowance_spin.valueChanged.connect(self._on_param_change)
+        bf.addRow("Pocket allowance:", self.pocket_allowance_spin)
+
+        # Surface clearance — Z offset on the plug pass so it stands
+        # proud of the pocket surface. Operator planes flush after gluing.
+        self.surface_clearance_spin = QDoubleSpinBox()
+        self.surface_clearance_spin.setRange(0.0, 10.0)
+        self.surface_clearance_spin.setDecimals(2)
+        self.surface_clearance_spin.setSingleStep(0.5)
+        self.surface_clearance_spin.setValue(2.5)
+        self.surface_clearance_spin.setSuffix(" mm")
+        self.surface_clearance_spin.setToolTip(
+            "PLUG-only Z offset. Shifts the plug V-carve pass deeper "
+            "by this amount so the plug stock stands proud of the "
+            "pocket surface after pressing. Plane/sand flush after "
+            "gluing to expose a sharp inlay edge. 2.5 mm (~0.1\") "
+            "is the canonical Sienci/Vectric value."
+        )
+        self.surface_clearance_spin.valueChanged.connect(self._on_param_change)
+        bf.addRow("Surface clearance:", self.surface_clearance_spin)
+
         self.endmill_combo = QComboBox()
         self.endmill_combo.setMaximumWidth(180)
         for b in bits:
@@ -1910,6 +1947,12 @@ class ControlsPanel(QWidget):
         self.skip_pocket_vbit_check.setChecked(
             getattr(params, "skip_pocket_vbit", False)
         )
+        self.pocket_allowance_spin.setValue(
+            getattr(params, "pocket_allowance_mm", 0.1)
+        )
+        self.surface_clearance_spin.setValue(
+            getattr(params, "surface_clearance_mm", 2.5)
+        )
         # Per-bit speed overrides — stash any whose tab doesn't exist yet
         # (new bits will get them on the next _refresh_speeds_tabs).
         self._pending_bit_overrides = dict(params.bit_speed_overrides)
@@ -1978,6 +2021,8 @@ class ControlsPanel(QWidget):
                 name for name, cb in self._plug_roughing_checks.items() if cb.isChecked()
             ],
             skip_pocket_vbit=self.skip_pocket_vbit_check.isChecked(),
+            pocket_allowance_mm=float(self.pocket_allowance_spin.value()),
+            surface_clearance_mm=float(self.surface_clearance_spin.value()),
         )
 
     def current_vbit(self) -> Bit:
