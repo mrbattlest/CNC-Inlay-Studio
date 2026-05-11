@@ -99,6 +99,7 @@ def _params_to_dict(p: InlayParams) -> dict:
         "plug_stock_height_mm": p.plug_stock_height_mm,
         "pocket_roughing_bits": list(p.pocket_roughing_bits),
         "plug_roughing_bits": list(p.plug_roughing_bits),
+        "skip_pocket_vbit": bool(getattr(p, "skip_pocket_vbit", False)),
         "bit_speed_overrides": {
             name: {
                 "rpm": ov.rpm,
@@ -153,6 +154,7 @@ def _params_from_dict(d: dict) -> InlayParams:
         plug_stock_height_mm=float(d.get("plug_stock_height_mm", 0.0)),
         pocket_roughing_bits=list(d.get("pocket_roughing_bits", [])),
         plug_roughing_bits=list(d.get("plug_roughing_bits", [])),
+        skip_pocket_vbit=bool(d.get("skip_pocket_vbit", False)),
         bit_speed_overrides={
             name: BitSpeedOverride(
                 rpm=int(entry["rpm"]) if entry.get("rpm") is not None else None,

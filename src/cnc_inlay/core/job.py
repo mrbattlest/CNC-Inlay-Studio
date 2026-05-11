@@ -119,6 +119,15 @@ class InlayParams:
     # sequences are independent.
     pocket_roughing_bits: list[str] = field(default_factory=list)
     plug_roughing_bits: list[str] = field(default_factory=list)
+    # Skip the V-bit pass on the pocket side. Useful for designs with
+    # very thin features (the V-bit's lateral cone widening at the
+    # surface can erode wood that sits adjacent to a tight cavity wall
+    # — e.g. a dog's collar in a multi-feature silhouette). The plug
+    # still gets its V-bit pass so the inserted plug seats tightly at
+    # the visible surface; the pocket walls stay vertical, which means
+    # the plug only contacts the pocket at the top edge but the visible
+    # joint is still a sharp clean line.
+    skip_pocket_vbit: bool = False
 
 
 @dataclass

@@ -870,7 +870,16 @@ def _generate_pocket_side(
     # endmill diameter (last bit in `sequence` is the finisher) so the
     # V-bit can skip the air-cutting passes at the top of its cone where
     # the bit isn't yet wide enough to reach uncleared wood.
-    if vbit is not None and vbit.type == "vbit":
+    #
+    # ``skip_pocket_vbit`` lets the user opt out of the pocket V-bit
+    # pass when their design has very thin adjacent features that the
+    # V-bit's lateral widening would erode. The plug-side V-bit still
+    # runs, so the inserted plug seats tightly at the visible top
+    # surface — pocket walls just stay vertical (no slope).
+    if (
+        vbit is not None and vbit.type == "vbit"
+        and not getattr(params, "skip_pocket_vbit", False)
+    ):
         from cnc_inlay.toolpath.vbit_walls import compute_vbit_wall_chains
         smallest_prev_d = sequence[-1].diameter_mm if sequence else 0.0
         vchains = compute_vbit_wall_chains(

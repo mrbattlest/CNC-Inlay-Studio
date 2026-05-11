@@ -995,6 +995,26 @@ class ControlsPanel(QWidget):
         bf.addRow("Wall finish:", _wrap_with_help(self.vbit_combo, "vbit_wall_finish", self))
         self.vbit_specs_label = _hint("")
         bf.addRow(self.vbit_specs_label)
+        # Skip-pocket-V-bit checkbox — for designs with thin features
+        # adjacent to the cavity wall (e.g. a dog's collar in a multi-
+        # feature silhouette) where the V-bit's lateral cone widening
+        # would erode the thin section. Plug V-bit still runs, so the
+        # plug seats tightly at the visible top surface; the pocket
+        # walls just stay vertical (flat-endmill finish).
+        self.skip_pocket_vbit_check = QCheckBox(
+            "Skip pocket V-bit (plug only)"
+        )
+        self.skip_pocket_vbit_check.setToolTip(
+            "Run the V-bit only on the plug, not on the pocket. "
+            "Use this when the design has thin features adjacent "
+            "to a cavity wall — the V-bit's surface-level widening "
+            "would otherwise erode them. Pocket walls stay vertical; "
+            "the plug still gets its angled-wall finish so the visible "
+            "top edge is a sharp line. Enabled only when a V-bit is "
+            "selected."
+        )
+        self.skip_pocket_vbit_check.toggled.connect(self._on_param_change)
+        bf.addRow(self.skip_pocket_vbit_check)
 
         self.endmill_combo = QComboBox()
         self.endmill_combo.setMaximumWidth(180)
@@ -1887,6 +1907,9 @@ class ControlsPanel(QWidget):
             cb.setChecked(name in params.pocket_roughing_bits)
         for name, cb in self._plug_roughing_checks.items():
             cb.setChecked(name in params.plug_roughing_bits)
+        self.skip_pocket_vbit_check.setChecked(
+            getattr(params, "skip_pocket_vbit", False)
+        )
         # Per-bit speed overrides — stash any whose tab doesn't exist yet
         # (new bits will get them on the next _refresh_speeds_tabs).
         self._pending_bit_overrides = dict(params.bit_speed_overrides)
@@ -1954,6 +1977,7 @@ class ControlsPanel(QWidget):
             plug_roughing_bits=[
                 name for name, cb in self._plug_roughing_checks.items() if cb.isChecked()
             ],
+            skip_pocket_vbit=self.skip_pocket_vbit_check.isChecked(),
         )
 
     def current_vbit(self) -> Bit:
