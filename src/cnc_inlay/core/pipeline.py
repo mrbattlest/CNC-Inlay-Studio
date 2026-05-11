@@ -994,19 +994,26 @@ def _generate_plug_side(
     # these angled walls mate with the pocket's V-walls and wedge tight.
     if vbit is not None and vbit.type == "vbit":
         from cnc_inlay.toolpath.vbit_walls import compute_vbit_wall_chains
-        # is_plug=True flips the centerline offset to OUTWARD so the
-        # V-bit traces a path in the cleared complement (outside the
-        # plug feature), producing an outward-sloping wall that mates
-        # with the pocket's inward-sloping wall after the stock is
-        # flipped. With the centerline now correctly in air on the
-        # plug side, the air-cutting-skip optimisation is also valid
-        # again — pass prev_bit_diameter_mm so early passes that
-        # don't reach uncleared wood are skipped.
+        # is_plug=True is retained for API compatibility (no longer
+        # affects centerline since v1.1.24).
+        #
+        # Depth: pocket_depth_mm only — NOT plug_depth (which is
+        # pocket_depth + glue_gap). The flat-endmill clearance on the
+        # plug side goes a full glue_gap deeper than the pocket's
+        # depth so the assembled inlay has room for adhesive without
+        # the plug bottoming out before the slopes mate. The V-bit
+        # bevel, however, only needs to span the wall the plug
+        # actually contacts inside the pocket — i.e. the pocket's
+        # depth. Cutting the bevel deeper would either spend time
+        # carving below the pocket floor (wasted) or, worse, extend
+        # the slope into the glue-gap region and undercut the plug's
+        # mating shoulder, leaving a slack fit at the visible top
+        # surface after assembly.
         smallest_prev_d = sequence[-1].diameter_mm if sequence else 0.0
         vchains = compute_vbit_wall_chains(
             mirrored,
             angle_deg=vbit.angle_deg,
-            depth_mm=plug_depth,
+            depth_mm=params.pocket_depth_mm,
             pass_depth_mm=params.pass_depth_mm,
             prev_bit_diameter_mm=smallest_prev_d,
             is_plug=True,

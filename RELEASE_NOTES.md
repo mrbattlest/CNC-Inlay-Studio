@@ -1,12 +1,12 @@
-- The On Machine scrub bar's "Show Pocket" / "Show Plug" toggle
-  buttons are gone — the active timeline now auto-syncs to the
-  preview tab you're looking at. Switch the main-area preview from
-  Pocket → Plug (or vice versa) and the scrub bar follows along
-  with the matching G-code program. Run-from-cursor always operates
-  on the side that's currently visible, so there's no longer a
-  way to accidentally pick a line on one side while looking at the
-  other.
-- Switching to the Finished or Surfacing tabs doesn't disturb the
-  scrub bar — it keeps showing whichever Pocket/Plug timeline was
-  last active, since those tabs don't correspond to a streamable
-  G-code program.
+- Plug-side V-bit pass now bevels to **pocket depth only**, not
+  `pocket_depth + glue_gap`. The flat-endmill clearance on the plug
+  side correctly cuts a glue-gap deeper than the pocket depth so
+  the assembled inlay has room for adhesive. The V-bit bevel,
+  though, only needs to span the wall the plug actually contacts
+  inside the pocket — i.e. the pocket's depth. Cutting the bevel
+  the extra glue-gap deeper either spent V-bit time below the
+  effective mating zone (wasted) or, worse, undercut the plug's
+  shoulder so the visible top surface of the assembled inlay had a
+  small slack gap rather than a tight wedge. Pocket-side V-bit
+  bevel was already at pocket depth; both sides now use the same
+  depth, which is what the mating math requires.
