@@ -373,6 +373,51 @@ HELP_TEXTS: dict[str, tuple[str, str]] = {
         "<br><br>"
         "<b>Set to 0 to disable the check.</b>"
     ),
+    "pocket_allowance": (
+        "Pocket allowance — V-bit inlay wall slack",
+        "<b>Only matters when a V-bit is selected.</b> A small amount the "
+        "pocket's design outline is grown outward by before the V-carve "
+        "toolpath is generated — so the pocket's angled walls end up "
+        "<i>slightly</i> wider than the plug's matching walls."
+        "<br><br>"
+        "<b>Why you need it:</b> in a perfect-math world the plug's V-walls "
+        "and the pocket's V-walls have identical angles and meet exactly. In "
+        "real wood — with bit runout, grain movement, and glue volume — "
+        "&ldquo;exact&rdquo; means the plug binds before it seats. A 0.05–"
+        "0.15&nbsp;mm allowance gives the glue somewhere to go and lets the "
+        "plug drop fully home instead of wedging high."
+        "<br><br>"
+        "This is the canonical F-Engrave / Vectric &ldquo;Pocket "
+        "Allowance&rdquo; parameter. It is applied to the <b>pocket side "
+        "only</b> — the plug is always cut to the nominal design size."
+        "<br><br>"
+        "<b>Default 0.1&nbsp;mm.</b> Raise it 0.05&nbsp;mm at a time if a "
+        "test plug sits proud; lower it toward 0 if you want the tightest "
+        "possible visible joint and you trust your machine's accuracy."
+    ),
+    "surface_clearance": (
+        "Surface clearance — proud-plug offset",
+        "<b>Only matters when a V-bit is selected.</b> The whole plug "
+        "V-carve pass is shifted <i>deeper</i> by this amount, so after the "
+        "plug stock is pressed into the pocket the plug stands <b>proud</b> "
+        "of the pocket surface by this much. You then plane or sand the "
+        "assembly flush, which exposes a crisp inlay edge at the new "
+        "surface."
+        "<br><br>"
+        "<b>Why this matters:</b> if the plug's flat top landed exactly at "
+        "the pocket surface, the tiniest depth error would leave a step you "
+        "couldn't sand out without going below the design. Cutting the plug "
+        "to stand proud guarantees there's material to remove down to a "
+        "perfectly flush, perfectly clean finish line."
+        "<br><br>"
+        "This is the F-Engrave / Vectric &ldquo;Surface Clearance&rdquo; "
+        "parameter — Sienci's Drapela uses 0.1&nbsp;in&nbsp;(~2.5&nbsp;mm). "
+        "Applied to the <b>plug side only</b>."
+        "<br><br>"
+        "<b>Default 2.5&nbsp;mm.</b> Make sure your plug stock is thick "
+        "enough: it needs at least <code>pocket_depth + surface_clearance + "
+        "a bit of safety margin</code>."
+    ),
 }
 
 
@@ -1015,43 +1060,6 @@ class ControlsPanel(QWidget):
         )
         self.skip_pocket_vbit_check.toggled.connect(self._on_param_change)
         bf.addRow(self.skip_pocket_vbit_check)
-
-        # Pocket allowance — small wall slack on the pocket V-carve so
-        # the plug doesn't bind on a tight cone-angle match. Plug side
-        # always uses 0 (cut to nominal).
-        self.pocket_allowance_spin = QDoubleSpinBox()
-        self.pocket_allowance_spin.setRange(0.0, 1.0)
-        self.pocket_allowance_spin.setDecimals(2)
-        self.pocket_allowance_spin.setSingleStep(0.05)
-        self.pocket_allowance_spin.setValue(0.1)
-        self.pocket_allowance_spin.setSuffix(" mm")
-        self.pocket_allowance_spin.setToolTip(
-            "POCKET-only V-carve wall slack. Buffers the design "
-            "outward by this amount before the V-carve, widening "
-            "the pocket walls slightly so the plug doesn't bind on "
-            "a tight angle match. 0.05–0.15 mm typical. Plug side "
-            "always uses 0 (cut to nominal)."
-        )
-        self.pocket_allowance_spin.valueChanged.connect(self._on_param_change)
-        bf.addRow("Pocket allowance:", self.pocket_allowance_spin)
-
-        # Surface clearance — Z offset on the plug pass so it stands
-        # proud of the pocket surface. Operator planes flush after gluing.
-        self.surface_clearance_spin = QDoubleSpinBox()
-        self.surface_clearance_spin.setRange(0.0, 10.0)
-        self.surface_clearance_spin.setDecimals(2)
-        self.surface_clearance_spin.setSingleStep(0.5)
-        self.surface_clearance_spin.setValue(2.5)
-        self.surface_clearance_spin.setSuffix(" mm")
-        self.surface_clearance_spin.setToolTip(
-            "PLUG-only Z offset. Shifts the plug V-carve pass deeper "
-            "by this amount so the plug stock stands proud of the "
-            "pocket surface after pressing. Plane/sand flush after "
-            "gluing to expose a sharp inlay edge. 2.5 mm (~0.1\") "
-            "is the canonical Sienci/Vectric value."
-        )
-        self.surface_clearance_spin.valueChanged.connect(self._on_param_change)
-        bf.addRow("Surface clearance:", self.surface_clearance_spin)
 
         self.endmill_combo = QComboBox()
         self.endmill_combo.setMaximumWidth(180)
@@ -1947,12 +1955,6 @@ class ControlsPanel(QWidget):
         self.skip_pocket_vbit_check.setChecked(
             getattr(params, "skip_pocket_vbit", False)
         )
-        self.pocket_allowance_spin.setValue(
-            getattr(params, "pocket_allowance_mm", 0.1)
-        )
-        self.surface_clearance_spin.setValue(
-            getattr(params, "surface_clearance_mm", 2.5)
-        )
         # Per-bit speed overrides — stash any whose tab doesn't exist yet
         # (new bits will get them on the next _refresh_speeds_tabs).
         self._pending_bit_overrides = dict(params.bit_speed_overrides)
@@ -2021,8 +2023,6 @@ class ControlsPanel(QWidget):
                 name for name, cb in self._plug_roughing_checks.items() if cb.isChecked()
             ],
             skip_pocket_vbit=self.skip_pocket_vbit_check.isChecked(),
-            pocket_allowance_mm=float(self.pocket_allowance_spin.value()),
-            surface_clearance_mm=float(self.surface_clearance_spin.value()),
         )
 
     def current_vbit(self) -> Bit:

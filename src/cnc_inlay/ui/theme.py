@@ -19,20 +19,41 @@ PLUG = QColor("#3d8bff")          # legacy / tab grouping
 # Per-bit colours for multi-bit (rest-machining) toolpath visualisation.
 # Ordered largest-first to match the cut order. Picked to be distinguishable
 # on the dark canvas background and to avoid the existing red/yellow/green
-# semantic colours (warnings, boundaries, travel moves).
+# semantic colours (warnings, boundaries, travel moves) and the bright-magenta
+# live machine indicator.
 BIT_PALETTE = [
     QColor("#f5a623"),  # amber — same as POCKET_CLEAR for visual continuity
-    QColor("#3dc8ff"),  # cyan
+    QColor("#3dc8ff"),  # sky blue
     QColor("#bf80ff"),  # lavender
     QColor("#9ee84a"),  # lime
     QColor("#ff79c6"),  # pink
+    QColor("#fb923c"),  # tangerine — distinct from amber (redder)
+    QColor("#2dd4bf"),  # teal — distinct from sky + lime
+    QColor("#818cf8"),  # indigo — distinct from lavender (bluer)
+    QColor("#e879f9"),  # fuchsia — distinct from pink (more violet)
+    QColor("#d4d4d8"),  # light cool grey — neutral, reads on dark
 ]
 
 
 def color_for_bit_index(i: int) -> QColor:
     """Return the canvas colour for the i'th bit in a multi-bit sequence.
-    Wraps if there are more bits than entries in the palette."""
-    return BIT_PALETTE[i % len(BIT_PALETTE)]
+
+    For the first 10 bits, uses the hand-tuned BIT_PALETTE. Beyond that
+    (rare — almost no inlay uses 11+ bits), generates additional colours
+    by rotating the hue with the golden angle (≈137.5°) at a fixed
+    saturation/value tuned for the dark canvas — so colours stay
+    perceptually spread out and NEVER repeat, no matter how many bits.
+    """
+    if i < len(BIT_PALETTE):
+        return BIT_PALETTE[i]
+    # Procedural fallback. Offset the starting hue so the generated
+    # colours don't collide with the static palette's hues, then step
+    # by the golden angle for maximal spread.
+    n = i - len(BIT_PALETTE)
+    hue = (47.0 + n * 137.508) % 360.0  # degrees
+    c = QColor()
+    c.setHsvF(hue / 360.0, 0.62, 0.96)
+    return c
 TRAVEL = QColor("#3eea7a")        # G0 rapid moves above stock — bright green
 MACHINE_BIT = QColor("#bf3aff")   # live cutting-head indicator — bright purple
 GRID = QColor("#3a3f47")

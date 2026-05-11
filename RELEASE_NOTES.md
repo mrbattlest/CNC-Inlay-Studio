@@ -1,44 +1,27 @@
-## v1.2.0 — Proper V-bit inlay toolpaths (medial-axis V-carve)
+## v1.2.2 — Revert the v1.2.0 V-bit rewrite; bigger bit-legend palette
 
-The V-bit pass has been fully rewritten to use the canonical
-medial-axis V-carve algorithm (per F-Engrave's reference open-source
-implementation and Vectric's V-Carve Inlay strategy). Earlier
-releases traced closed loops along the design boundary at fixed Z —
-which barely cut wood and never produced the actual prismatic
-frustum that V-bit inlay relies on. Now:
+**Reverted the v1.2.0 medial-axis V-carve.** That rewrite applied a
+V-groove-engraving algorithm (bit tip follows the polygon's skeleton)
+to filled-silhouette inlay — which on the PLUG side carved a V-trough
+straight down the middle of the plug feature (the wood that's supposed
+to STAY). The V-bit toolpath generation is back to the v1.1.30
+boundary-following behaviour. It's imperfect (the known "thin bevel"
+look) but it doesn't destroy the plug, and the "Skip pocket V-bit
+(plug only)" checkbox from v1.1.27 is still there if you want it.
 
-- **Bit tip follows the medial axis** of the design polygon (the
-  skeleton — the locus of points equidistant from the boundary).
-  The bit's UPPER edge traces the design boundary at the surface,
-  not the tip.
+The Pocket allowance / Surface clearance controls introduced in
+v1.2.0 are removed (the reverted code doesn't use them). Project
+files that were saved with those values still load fine — the fields
+are kept on the model, just unused.
 
-- **Z varies per point**: ``Z = -r/tan(half_angle) + flat_depth``,
-  clipped to ``[-flat_depth, 0]``. Wide regions reach the flat
-  floor; narrow regions are V-cut at the maximum depth their local
-  width allows. The cone-to-shank transition still caps the
-  effective depth for steep bits.
+**Bit legend / path-preview colours no longer repeat.** The palette
+went from 5 colours to 10 hand-tuned, mutually distinct ones (amber,
+sky, lavender, lime, pink, tangerine, teal, indigo, fuchsia, cool
+grey). Designs with 11+ bits get additional colours generated
+procedurally by golden-angle hue rotation — so colours stay
+perceptually spread out and never collide, no matter how many bits
+are in the cut sequence.
 
-- **Pocket allowance** (new param, default 0.1 mm) — small wall
-  slack on the pocket side so the plug doesn't bind on a tight
-  cone-angle match. Pocket only.
-
-- **Surface clearance** (new param, default 2.5 mm) — Z offset that
-  shifts the entire plug pass deeper so the plug stock stands proud
-  of the pocket surface after pressing. Plane/sand flush after
-  gluing to expose a sharp inlay edge. Plug only.
-
-- **Mating geometry**: both halves are prismatic frustums of the
-  same V-angle. Wedge fit comes from cone angles matching, not
-  from offset tricks. Plug uses MIRRORED design with NO allowance.
-
-- **Pass-depth split** still works on the new variable-Z chains:
-  each pass clips Z to a deeper ceiling, progressively shaving the
-  V-profile from surface to floor.
-
-Two new sidebar controls under the Wall finish dropdown: **Pocket
-allowance** (mm) and **Surface clearance** (mm). Persisted in the
-.inlay project file.
-
-**For existing projects**: the cache will auto-invalidate on first
-open (version-folded signature from v1.1.13), and Preview will
-regenerate the V-bit chains using the new algorithm.
+A proper V-bit inlay implementation tuned for silhouettes is still
+on the roadmap; v1.2.0's approach was the wrong foundation and needed
+to come out before it caused a ruined cut.

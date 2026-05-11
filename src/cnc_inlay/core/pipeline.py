@@ -880,18 +880,14 @@ def _generate_pocket_side(
         vbit is not None and vbit.type == "vbit"
         and not getattr(params, "skip_pocket_vbit", False)
     ):
-        # POCKET V-bit: medial-axis V-carve with pocket-allowance
-        # widening, NO surface clearance (pocket sits at the work
-        # surface, not above it). The plug stands proud — not the
-        # pocket — so surface_clearance is plug-side only.
-        from cnc_inlay.toolpath.vbit_walls import compute_vbit_inlay_chains
-        vchains = compute_vbit_inlay_chains(
+        from cnc_inlay.toolpath.vbit_walls import compute_vbit_wall_chains
+        smallest_prev_d = sequence[-1].diameter_mm if sequence else 0.0
+        vchains = compute_vbit_wall_chains(
             centered_geom,
             angle_deg=vbit.angle_deg,
-            flat_depth_mm=params.pocket_depth_mm,
+            depth_mm=params.pocket_depth_mm,
             pass_depth_mm=params.pass_depth_mm,
-            pocket_allowance_mm=getattr(params, "pocket_allowance_mm", 0.1),
-            surface_clearance_mm=0.0,
+            prev_bit_diameter_mm=smallest_prev_d,
             shank_diameter_mm=vbit.shank_mm,
         )
         if vchains:
@@ -1006,28 +1002,15 @@ def _generate_plug_side(
     # operator flips the plug stock and presses it into the pocket,
     # these angled walls mate with the pocket's V-walls and wedge tight.
     if vbit is not None and vbit.type == "vbit":
-        # PLUG V-bit: medial-axis V-carve on the MIRRORED design
-        # polygon (= the plug feature itself). NO pocket allowance —
-        # the plug is cut to nominal so the cone walls match the
-        # pocket's allowance-widened ones with the right slack. The
-        # ``surface_clearance_mm`` Z offset shifts the entire pass
-        # deeper so the plug stock stands proud of the pocket surface
-        # after pressing; the operator planes flush after gluing to
-        # expose a sharp visible inlay edge.
-        #
-        # flat_depth = pocket_depth_mm only (NOT plug_depth, which
-        # adds glue_gap). The bevel only needs to span the wall the
-        # plug actually contacts inside the pocket; carving deeper
-        # would extend the slope into the glue-gap region and
-        # undercut the plug's mating shoulder.
-        from cnc_inlay.toolpath.vbit_walls import compute_vbit_inlay_chains
-        vchains = compute_vbit_inlay_chains(
+        from cnc_inlay.toolpath.vbit_walls import compute_vbit_wall_chains
+        smallest_prev_d = sequence[-1].diameter_mm if sequence else 0.0
+        vchains = compute_vbit_wall_chains(
             mirrored,
             angle_deg=vbit.angle_deg,
-            flat_depth_mm=params.pocket_depth_mm,
+            depth_mm=params.pocket_depth_mm,
             pass_depth_mm=params.pass_depth_mm,
-            pocket_allowance_mm=0.0,
-            surface_clearance_mm=getattr(params, "surface_clearance_mm", 2.5),
+            prev_bit_diameter_mm=smallest_prev_d,
+            is_plug=True,
             shank_diameter_mm=vbit.shank_mm,
         )
         if vchains:
