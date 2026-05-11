@@ -17,42 +17,61 @@ BOUNDARY = QColor("#ffd84d")      # plug outer freeing cut (yellow)
 PLUG = QColor("#3d8bff")          # legacy / tab grouping
 
 # Per-bit colours for multi-bit (rest-machining) toolpath visualisation.
-# Ordered largest-first to match the cut order. Picked to be distinguishable
-# on the dark canvas background and to avoid the existing red/yellow/green
-# semantic colours (warnings, boundaries, travel moves) and the bright-magenta
-# live machine indicator.
+# Ordered largest-first to match the cut order. Ten colours spread around
+# the hue wheel so every pair is clearly distinguishable on the dark
+# canvas, deliberately dodging the two colours that ARE used elsewhere on
+# the canvas: the travel-move green (#3eea7a) and the live-machine
+# magenta (#bf3aff). (Warning red / yellow live only in UI badges, not on
+# the canvas, so bit colours can use those hue zones.)
+#
+# Hue layout (approx): amber 37° · sky 199° · hot-pink 330° · lime 83° ·
+# violet 258° · teal 173° · coral 351° · periwinkle 234° · magenta 292° ·
+# neutral grey. Closest pair (hot-pink vs coral, ~21° apart) is still
+# easily told apart by warmth + lightness; everything else is wider.
 BIT_PALETTE = [
-    QColor("#f5a623"),  # amber — same as POCKET_CLEAR for visual continuity
-    QColor("#3dc8ff"),  # sky blue
-    QColor("#bf80ff"),  # lavender
-    QColor("#9ee84a"),  # lime
-    QColor("#ff79c6"),  # pink
-    QColor("#fb923c"),  # tangerine — distinct from amber (redder)
-    QColor("#2dd4bf"),  # teal — distinct from sky + lime
-    QColor("#818cf8"),  # indigo — distinct from lavender (bluer)
-    QColor("#e879f9"),  # fuchsia — distinct from pink (more violet)
-    QColor("#d4d4d8"),  # light cool grey — neutral, reads on dark
+    QColor("#f5a623"),  # 1. amber / gold     — matches POCKET_CLEAR
+    QColor("#38bdf8"),  # 2. sky blue
+    QColor("#f472b6"),  # 3. hot pink         — magenta-leaning
+    QColor("#a3e635"),  # 4. lime green       — yellow-leaning
+    QColor("#a78bfa"),  # 5. violet / lavender
+    QColor("#2dd4bf"),  # 6. teal             — clearly distinct from amber
+    QColor("#fb7185"),  # 7. coral / salmon   — red-leaning, vs hot-pink
+    QColor("#818cf8"),  # 8. periwinkle blue  — bluer than violet
+    QColor("#c026d3"),  # 9. vivid magenta    — distinct from machine #bf3aff
+    QColor("#cbd5e1"),  # 10. light cool grey — neutral
 ]
+
+
+# Travel-move + machine-indicator colours that bit colours must avoid.
+# (Declared above the procedural fallback so it can dodge them; the
+# canonical definitions are also re-exported below alongside the other
+# semantic colours.)
+_TRAVEL_HUE_DEG = 141.0   # ≈ hue of TRAVEL #3eea7a
+_MACHINE_HUE_DEG = 281.0  # ≈ hue of MACHINE_BIT #bf3aff
+_FORBIDDEN_HUE_GUARD_DEG = 16.0
 
 
 def color_for_bit_index(i: int) -> QColor:
     """Return the canvas colour for the i'th bit in a multi-bit sequence.
 
-    For the first 10 bits, uses the hand-tuned BIT_PALETTE. Beyond that
-    (rare — almost no inlay uses 11+ bits), generates additional colours
-    by rotating the hue with the golden angle (≈137.5°) at a fixed
-    saturation/value tuned for the dark canvas — so colours stay
-    perceptually spread out and NEVER repeat, no matter how many bits.
+    For the first 10 bits uses the hand-tuned BIT_PALETTE (all mutually
+    distinct). Beyond 10 — vanishingly rare — generates more colours by
+    golden-angle hue rotation, snapping away from the travel-green and
+    machine-magenta hues so the generated colours never collide with
+    those canvas elements (or with each other).
     """
     if i < len(BIT_PALETTE):
         return BIT_PALETTE[i]
-    # Procedural fallback. Offset the starting hue so the generated
-    # colours don't collide with the static palette's hues, then step
-    # by the golden angle for maximal spread.
     n = i - len(BIT_PALETTE)
-    hue = (47.0 + n * 137.508) % 360.0  # degrees
+    hue = (19.0 + n * 137.508) % 360.0  # degrees — golden-angle spread
+    # Push the hue out of the guard band around travel/machine hues.
+    for forbidden in (_TRAVEL_HUE_DEG, _MACHINE_HUE_DEG):
+        delta = ((hue - forbidden + 180.0) % 360.0) - 180.0
+        if abs(delta) < _FORBIDDEN_HUE_GUARD_DEG:
+            shift = _FORBIDDEN_HUE_GUARD_DEG if delta >= 0 else -_FORBIDDEN_HUE_GUARD_DEG
+            hue = (forbidden + shift) % 360.0
     c = QColor()
-    c.setHsvF(hue / 360.0, 0.62, 0.96)
+    c.setHsvF(hue / 360.0, 0.66, 0.97)
     return c
 TRAVEL = QColor("#3eea7a")        # G0 rapid moves above stock — bright green
 MACHINE_BIT = QColor("#bf3aff")   # live cutting-head indicator — bright purple
