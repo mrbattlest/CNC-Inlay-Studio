@@ -855,8 +855,57 @@ def _generate_pocket_side(
     sequence = _resolve_bit_sequence(
         endmill, params.pocket_roughing_bits, bit_library
     )
+
+    # V-bit inlay geometry on the POCKET side:
+    #
+    # For the V-bit's cone to actually CARVE the cavity wall (not just
+    # kiss it), the flat-endmill clearance must leave the wall sitting
+    # ``L`` mm INSIDE the design line, where L = pocket_depth ×
+    # tan(half_angle) (capped at the bit's shank radius). The V-bit
+    # then follows that same inset line at full depth, and its cone —
+    # spanning ±L at the surface — sweeps the wedge of wall wood out to
+    # the original design line. Final cavity: the design line at the
+    # surface (so the visible inlay matches the user's design exactly)
+    # and (design − L) at the floor, sloped at the bit angle.
+    #
+    # The PLUG side needs no such shrink: there the endmill clears the
+    # complement (leaving the plug feature at the full design size on
+    # the cleared floor) and the V-bit follows the full design boundary
+    # — its cone removes a wedge from the plug feature's top, leaving it
+    # (design − L) at the cut face and (design) at the cleared floor,
+    # which after the flip mates the pocket cavity exactly.
+    #
+    # ``skip_pocket_vbit`` opts out of the pocket V-bit entirely (and
+    # therefore the shrink) — use it for designs with features narrower
+    # than 2L, which the shrink would erase.
+    vbit_active_pocket = (
+        vbit is not None and vbit.type == "vbit"
+        and not getattr(params, "skip_pocket_vbit", False)
+    )
+    pocket_geom = centered_geom
+    if vbit_active_pocket:
+        from cnc_inlay.toolpath.vbit_walls import vbit_lateral_reach_mm
+        L = vbit_lateral_reach_mm(
+            vbit.angle_deg, params.pocket_depth_mm,
+            shank_diameter_mm=vbit.shank_mm,
+        )
+        if L > 0:
+            try:
+                shrunk = centered_geom.buffer(-L).buffer(0)
+                if not shrunk.is_empty:
+                    pocket_geom = shrunk
+                else:
+                    # The whole design vanished at this inset — every
+                    # feature is narrower than 2L. Fall back to the
+                    # un-shrunk geometry; the V-bit pass below will
+                    # then just kiss the walls (harmless), and the
+                    # operator should really enable Skip pocket V-bit.
+                    pocket_geom = centered_geom
+            except Exception:
+                pocket_geom = centered_geom
+
     bit_chains = _rest_machine_chains(
-        centered_geom, sequence,
+        pocket_geom, sequence,
         depth_mm=params.pocket_depth_mm,
         step_over_frac=params.pocket_step_over_frac,
         pass_depth_mm=params.pass_depth_mm,
@@ -865,29 +914,17 @@ def _generate_pocket_side(
         progress_hi=progress_hi,
     )
 
-    # V-bit wall-finish pass — runs LAST so it bevels the perimeter that
-    # the flat endmills just left as a vertical wall. Pass the smallest
-    # endmill diameter (last bit in `sequence` is the finisher) so the
-    # V-bit can skip the air-cutting passes at the top of its cone where
-    # the bit isn't yet wide enough to reach uncleared wood.
-    #
-    # ``skip_pocket_vbit`` lets the user opt out of the pocket V-bit
-    # pass when their design has very thin adjacent features that the
-    # V-bit's lateral widening would erode. The plug-side V-bit still
-    # runs, so the inserted plug seats tightly at the visible top
-    # surface — pocket walls just stay vertical (no slope).
-    if (
-        vbit is not None and vbit.type == "vbit"
-        and not getattr(params, "skip_pocket_vbit", False)
-    ):
+    if vbit_active_pocket:
         from cnc_inlay.toolpath.vbit_walls import compute_vbit_wall_chains
-        smallest_prev_d = sequence[-1].diameter_mm if sequence else 0.0
+        # V-bit follows ``pocket_geom``'s boundary directly (offset 0):
+        # since pocket_geom is already the design inset by L, the V-bit
+        # tip path is (design − L). Its cone reaches the original design
+        # line at the surface and carves the wall wedge.
         vchains = compute_vbit_wall_chains(
-            centered_geom,
+            pocket_geom,
             angle_deg=vbit.angle_deg,
             depth_mm=params.pocket_depth_mm,
             pass_depth_mm=params.pass_depth_mm,
-            prev_bit_diameter_mm=smallest_prev_d,
             shank_diameter_mm=vbit.shank_mm,
         )
         if vchains:
