@@ -524,6 +524,16 @@ def _medial_axis_cleanup_chains(
     # delivers wall-clock speedup. AI-generated designs commonly
     # produce 10–50 residual pieces; on an 8-core machine this cuts the
     # cleanup phase from 1–3s sequential to 200–500ms parallel.
+    # Smallest distance-transform value (in pixels) at which the bit's disk
+    # still fits without spilling past the design boundary. Skeleton points
+    # below this threshold lie in a feature narrower than the bit — running
+    # the bit there would gouge the wall (e.g. the bit going down the
+    # centerline of a 4 mm-wide letter stroke with a 6.35 mm bit overhangs
+    # 1+ mm on each side and eats the letter). At those points we split
+    # the chain instead; the material stays uncut, which is the correct
+    # signal that this bit is too coarse for the feature.
+    min_fit_px = bit_r / resolution_mm
+
     def _process_piece(piece) -> list[Chain]:
         if piece.area < min_piece_area:
             return []
@@ -545,36 +555,62 @@ def _medial_axis_cleanup_chains(
         piece_minx, piece_miny, piece_maxx, piece_maxy = piece.bounds
         cx_world = (piece_minx + piece_maxx) / 2.0
         cy_world = (piece_miny + piece_maxy) / 2.0
+        import numpy as _np
+        dist_px = skel.distance_px
+        rows_max, cols_max = dist_px.shape
         local_out: list[Chain] = []
         for px_chain in px_chains:
             if len(px_chain) < 2:
                 continue
-            import numpy as _np
-            rows = _np.array([p[0] for p in px_chain], dtype=_np.float64)
-            cols = _np.array([p[1] for p in px_chain], dtype=_np.float64)
-            xs, ys = transform.pixel_to_mm(rows, cols)
-            coords = [
-                (float(x + cx_world), float(y + cy_world))
-                for x, y in zip(xs, ys)
-            ]
-            # Douglas-Peucker: collapses pixel-stepped runs to straight lines
-            # without losing fidelity at the bit's resolution. Drops chain
-            # point count by ~10× on typical cleanup residuals.
-            try:
-                ls = LineString(coords).simplify(simplify_tol, preserve_topology=False)
-                if ls.is_empty:
+            # Split the pixel chain into maximal runs where the bit fits
+            # without overcutting the wall. dist_px[r,c] is the distance
+            # from skeleton pixel (r,c) to the nearest residual boundary;
+            # the bit (radius bit_r) only fits where that distance is at
+            # least bit_r. A 6.35 mm bit on a 4 mm-wide letter stroke
+            # fails this test along the whole stroke, so the whole chain
+            # is dropped — far better than gouging the stroke wider.
+            runs: list[list[tuple[int, int]]] = []
+            current: list[tuple[int, int]] = []
+            for (r, c) in px_chain:
+                if 0 <= r < rows_max and 0 <= c < cols_max:
+                    fits = float(dist_px[r, c]) >= min_fit_px
+                else:
+                    fits = True  # bounds-edge skeleton pixel; trust it
+                if fits:
+                    current.append((r, c))
+                elif len(current) >= 2:
+                    runs.append(current)
+                    current = []
+                else:
+                    current = []
+            if len(current) >= 2:
+                runs.append(current)
+            for run in runs:
+                rows = _np.array([p[0] for p in run], dtype=_np.float64)
+                cols = _np.array([p[1] for p in run], dtype=_np.float64)
+                xs, ys = transform.pixel_to_mm(rows, cols)
+                coords = [
+                    (float(x + cx_world), float(y + cy_world))
+                    for x, y in zip(xs, ys)
+                ]
+                # Douglas-Peucker: collapses pixel-stepped runs to straight
+                # lines without losing fidelity at the bit's resolution.
+                # Drops chain point count by ~10× on typical residuals.
+                try:
+                    ls = LineString(coords).simplify(simplify_tol, preserve_topology=False)
+                    if ls.is_empty:
+                        continue
+                    if ls.geom_type == "LineString":
+                        coords = list(ls.coords)
+                    elif ls.geom_type == "MultiLineString":
+                        # take the longest segment if simplify split it
+                        longest = max(ls.geoms, key=lambda g: g.length)
+                        coords = list(longest.coords)
+                except Exception:
+                    pass  # keep raw coords if simplify fails
+                if chain_length(coords) < min_chain_len_mm:
                     continue
-                if ls.geom_type == "LineString":
-                    coords = list(ls.coords)
-                elif ls.geom_type == "MultiLineString":
-                    # take the longest segment if simplify split it
-                    longest = max(ls.geoms, key=lambda g: g.length)
-                    coords = list(longest.coords)
-            except Exception:
-                pass  # keep raw coords if simplify fails
-            if chain_length(coords) < min_chain_len_mm:
-                continue
-            local_out.append([(x, y, float(-depth_mm)) for x, y in coords])
+                local_out.append([(x, y, float(-depth_mm)) for x, y in coords])
         return local_out
 
     # Pick the parallelism level. We're running inside the pipeline

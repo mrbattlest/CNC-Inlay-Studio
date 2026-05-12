@@ -805,7 +805,7 @@ class MainWindow(QMainWindow):
             self._control_panel.clear_tool_change_banner
         )
         self._control_panel.streamResumeRequested.connect(
-            lambda: self._control_panel.set_paused_for_tool_change(False)
+            lambda: self._control_panel.set_m0_tool_change(False)
         )
         self._control_panel.streamResumeRequested.connect(
             self._tool_change_dialog.hide
@@ -3214,10 +3214,12 @@ class MainWindow(QMainWindow):
         self._render_stream_time_status()
 
     def _on_tool_change_required(self, bit_name: str) -> None:
-        """Cut paused on M0 for a bit swap. Pop the modeless instructions
-        dialog and re-enable jog so the operator can navigate to uncut wood
-        and re-zero Z. Both stay active until they click Resume."""
-        self._control_panel.set_paused_for_tool_change(True)
+        """Cut paused on M0 for a bit swap. The streamer parked before the
+        M0 so GRBL is sitting at Idle — jog and Set Z = 0 both work. Pop
+        the modeless instructions dialog and enter the tool-change pause
+        so the jog gate opens (and stays open across status polls) until
+        the operator clicks Resume."""
+        self._control_panel.set_m0_tool_change(True)
         self._tool_change_dialog.show_for_bit(bit_name)
 
     def _tick_stream_clock(self) -> None:

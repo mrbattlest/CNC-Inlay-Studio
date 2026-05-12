@@ -260,9 +260,28 @@ class MachineWorker(QObject):
 
     @Slot()
     def stream_resume(self) -> None:
-        """Send GRBL cycle-start (`~`). Works whether or not a streamer is
-        active — clears any feed-hold state on the machine."""
+        """Resume a paused stream.
+
+        Two cases:
+          * **M0 tool-change halt** — the streamer is parked just before a
+            programmed M0 that was never sent to GRBL (GRBL is Idle). Skip
+            the M0 and resume feeding from the next bit's spindle-on. No
+            cycle-start needed; GRBL was never in Hold.
+          * **Manual feed-hold / recovery** — send GRBL cycle-start (`~`)
+            to clear the hold, and un-pause the streamer.
+
+        Works whether or not a streamer is active, so the user can still
+        clear a stale Hold after a connection hiccup.
+        """
         if self._serial is None:
+            return
+        from cnc_inlay.control import run_log
+        if self._streamer is not None and self._streamer.at_tool_change:
+            self._pending_tool_change_bit = None
+            self._streamer.resume_past_tool_change()
+            run_log.log_event(
+                "tool-change resume — skipping M0, continuing stream"
+            )
             return
         if self._streamer is not None:
             self._streamer.resume()
@@ -390,7 +409,6 @@ class MachineWorker(QObject):
         if self._streamer is None or self._serial is None:
             return
         from cnc_inlay.control import run_log
-        cursor_before = self._streamer.cursor
 
         # Wrap the write function so every streamed line lands in the
         # run log too — the streamer calls serial.write directly with
@@ -404,31 +422,26 @@ class MachineWorker(QObject):
             self._serial.write(payload)
 
         self._streamer.feed(_logging_write)
-        cursor_after = self._streamer.cursor
-        # Detect tool changes: any newly-sent line whose index is in the
-        # streamer's tool_change_at map means there's an M0 in flight for
-        # that bit. STASH the bit name — the actual UI prompt is deferred
-        # until we see GRBL transition to Hold, so the operator isn't told
-        # to swap a spinning bit while the planner queue drains.
-        if self._streamer.tool_change_at:
-            for idx in range(cursor_before, cursor_after):
-                bit_name = self._streamer.tool_change_at.get(idx)
-                if bit_name is not None:
-                    self._pending_tool_change_bit = bit_name
-                    # Pause the streamer immediately so it stops pumping
-                    # lines past M0 into GRBL's serial RX buffer. With
-                    # an aggressive streamer + a slow operator (paper-
-                    # feeler Z zero takes a minute), the planner can fill
-                    # up and the RX buffer can run dry of breathing room
-                    # for jog ($J=) commands. Pausing here keeps GRBL's
-                    # serial RX clear so jogs always land cleanly. The
-                    # cycle-start (~) on Resume will both clear the M0
-                    # hold AND we'll un-pause the streamer below in
-                    # stream_resume so feeding picks back up.
-                    self._streamer.pause()
-                    run_log.log_event(
-                        f"M0 tool-change pause — streamer halted for {bit_name}"
-                    )
+        # Detect a programmed-M0 tool-change halt. The streamer parks
+        # itself *before* the M0 and never sends it — sending M0 would
+        # put GRBL into Hold, where jog ($J=) and re-zero (G10) are both
+        # rejected, which is exactly what the operator needs during a
+        # bit swap. With the M0 withheld, GRBL drains its buffer and
+        # settles to Idle. We stash the bit name now and defer the UI
+        # prompt until GRBL actually reaches Idle (planner drained), so
+        # the operator isn't told to swap a still-spinning bit.
+        if (
+            self._streamer.at_tool_change
+            and self._pending_tool_change_bit is None
+        ):
+            self._pending_tool_change_bit = self._streamer.tool_change_at[
+                self._streamer.cursor
+            ]
+            run_log.log_event(
+                f"M0 tool-change halt — streamer parked before M0 "
+                f"for {self._pending_tool_change_bit} "
+                f"(GRBL stays Idle so jog + Set Z=0 work)"
+            )
         self.streamProgress.emit(self._streamer.cursor, self._streamer.total)
         if self._streamer.is_done:
             if self._stream_timer is not None:
@@ -495,13 +508,15 @@ class MachineWorker(QObject):
                     if eff is not None:
                         self._last_wpos = eff
                     self.statusReceived.emit(status)
-                    # Once GRBL actually halts (Hold), the M0 has finished
-                    # draining the planner queue and the spindle is stopped.
-                    # Emit the deferred tool-change prompt now — it's safe
-                    # to swap the bit.
+                    # The streamer parked before the M0 (it's never sent),
+                    # so GRBL drains its planner and settles to Idle with
+                    # the spindle stopped (the preceding M5 ran). The
+                    # moment GRBL reaches Idle it's safe — and possible —
+                    # to swap the bit, jog, and re-zero Z. Emit the
+                    # deferred tool-change prompt now.
                     if (
                         self._pending_tool_change_bit is not None
-                        and status.state == MachineState.HOLD
+                        and status.state == MachineState.IDLE
                     ):
                         bit = self._pending_tool_change_bit
                         self._pending_tool_change_bit = None

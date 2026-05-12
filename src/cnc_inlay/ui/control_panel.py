@@ -94,10 +94,16 @@ class ControlPanel(QWidget):
         super().__init__(parent)
         self._controller = controller
         self._streaming = False
-        # Whether streaming is currently paused on a programmed M0 for a
-        # tool change. Different from a user-initiated feed-hold pause —
-        # this state should re-enable jog so the operator can re-zero Z.
+        # Whether streaming is currently paused so the operator may jog /
+        # re-zero — true during a programmed-M0 tool change AND during a
+        # manual feed-hold recovery. Re-enables jog + the Set-Z fast path.
         self._paused_for_tool_change = False
+        # True specifically while a programmed-M0 tool-change pause is in
+        # progress. Distinct from _paused_for_tool_change because in this
+        # state GRBL sits at Idle (the M0 is never sent — see streamer),
+        # so _on_status_changed must NOT infer "running" from the Idle
+        # state and drop the jog gate out from under the operator.
+        self._m0_tool_change_active = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(6, 4, 6, 4)
@@ -782,13 +788,15 @@ class ControlPanel(QWidget):
             self._pos_label.setText(
                 f"WPos  X {wpos.x:7.3f}   Y {wpos.y:7.3f}   Z {wpos.z:7.3f}"
             )
-        # Recovery-jog gate: when a stream is paused (Hold) — whether from
-        # a programmed M0 tool change or a user-initiated feed-hold — let
-        # the operator jog so they can lift the bit, swap a broken one,
-        # re-zero Z, etc. before clicking Resume. When motion resumes
-        # (Run/Jog/Idle), lock jog out again so a stray click can't crash
-        # into the running cut.
-        if self._streaming:
+        # Recovery-jog gate: when a stream is paused on a manual feed-hold
+        # (GRBL state Hold) or stalled in Alarm, let the operator jog so
+        # they can lift the bit, swap a broken one, re-zero Z, etc. before
+        # clicking Resume. When motion resumes (Run/Jog/Idle), lock jog
+        # out again so a stray click can't crash into the running cut.
+        # Skipped entirely during a programmed-M0 tool change: there GRBL
+        # sits at Idle on purpose, and the jog gate is owned by the
+        # explicit toolChangeRequired → set_m0_tool_change(True) path.
+        if self._streaming and not self._m0_tool_change_active:
             should_allow = status.state in (MachineState.HOLD, MachineState.ALARM)
             if should_allow != self._paused_for_tool_change:
                 self.set_paused_for_tool_change(should_allow)
@@ -889,6 +897,7 @@ class ControlPanel(QWidget):
         self._streaming = streaming
         # Leaving tool-change-pause mode whenever streaming state changes.
         self._paused_for_tool_change = False
+        self._m0_tool_change_active = False
         for btn in (self._run_btn, self._dry_btn):
             btn.setEnabled(not streaming and self._controller.is_connected)
         for btn in (
@@ -906,11 +915,24 @@ class ControlPanel(QWidget):
             and self._scrub_bar.total_lines > 0
         )
 
+    def set_m0_tool_change(self, active: bool) -> None:
+        """Enter/leave a programmed-M0 tool-change pause.
+
+        During this pause GRBL deliberately sits at Idle (the M0 line is
+        never sent — see ``Streamer.feed``), so jog and ``G10`` re-zero
+        both work normally. We mark the state so ``_on_status_changed``
+        doesn't treat the Idle report as "cutting resumed" and yank the
+        jog gate away, then route through ``set_paused_for_tool_change``
+        for the actual button enabling.
+        """
+        self._m0_tool_change_active = active
+        self.set_paused_for_tool_change(active)
+
     def set_paused_for_tool_change(self, paused: bool) -> None:
-        """Mid-stream M0 tool-change mode. Re-enable jog so the operator can
-        navigate the bit to uncut wood and re-zero Z, while keeping Run-on-
-        machine buttons disabled (the existing program is still streaming —
-        we're just paused inside it).
+        """Mid-stream pause mode (M0 tool change or manual feed-hold).
+        Re-enable jog so the operator can navigate the bit to uncut wood
+        and re-zero Z, while keeping Run-on-machine buttons disabled (the
+        existing program is still streaming — we're just paused inside it).
         """
         self._paused_for_tool_change = paused
         # Jog buttons → enabled when paused, disabled when actively cutting.

@@ -81,11 +81,21 @@ class ScrubBar(QWidget):
     def set_progress(self, line: int) -> None:
         """Update the live machine-progress fill. Pulled forward to match
         the stream — the scrub handle never sits behind the live cursor
-        because that would be a no-op."""
+        because that would be a no-op.
+
+        We deliberately do NOT emit ``scrubMoved`` from here. That signal
+        feeds the scrub-preview path which overwrites the canvas's live
+        machine-position cone with the *programmed* toolpath XY at the
+        cursor line. Streaming fires this method ~66 times a second; the
+        cursor is the latest line SENT, which is ahead of what GRBL is
+        actually cutting (planner + 128-byte RX buffer lag), so the cone
+        would visibly flicker between the toolpath-ahead position and
+        the real WPos arriving in GRBL status reports at ~5 Hz. Progress
+        is internal state — ``scrubMoved`` is for user-drag intent only.
+        """
         self._progress_line = max(0, min(line, self._total_lines))
         if self._scrub_line < self._progress_line:
             self._scrub_line = self._progress_line
-            self.scrubMoved.emit(self._scrub_line)
         self.update()
 
     def set_scrub_line(self, line: int) -> None:

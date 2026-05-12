@@ -123,15 +123,34 @@ class Streamer:
         self.is_paused = False
         self.is_aborted = False
 
+    @property
+    def at_tool_change(self) -> bool:
+        """True when the cursor is parked on a programmed-M0 line (the line
+        is *not* sent to GRBL — see ``feed``)."""
+        return self.cursor in self.tool_change_at
+
     def feed(self, write_fn: Callable[[bytes], None]) -> int:
         """Send as many lines as fit in GRBL's remaining serial buffer.
 
         Returns the number of lines written this call.
+
+        A programmed ``M0`` tool-change line is *never* sent to GRBL: it
+        would put GRBL into the ``Hold`` state, where ``$J=`` jog and
+        ``G10`` re-zero commands are both rejected — exactly the controls
+        the operator needs during a bit swap. Instead the streamer parks
+        itself one line before the M0 (``is_paused = True``); GRBL drains
+        its buffer and settles to ``Idle``, leaving jog and re-zero fully
+        available. ``resume_past_tool_change`` skips the M0 and continues.
         """
         if self.is_paused or self.is_aborted:
             return 0
         sent = 0
         while self.cursor < self.total:
+            if self.cursor in self.tool_change_at:
+                # Park before the M0 — don't send it. The controller
+                # waits for GRBL to reach Idle, then prompts the swap.
+                self.is_paused = True
+                break
             line = self.lines[self.cursor]
             payload = (line + "\n").encode("ascii", errors="replace")
             n = len(payload)
@@ -156,6 +175,14 @@ class Streamer:
         self.is_paused = True
 
     def resume(self) -> None:
+        self.is_paused = False
+
+    def resume_past_tool_change(self) -> None:
+        """Resume after a programmed-M0 halt: skip the M0 line (it was never
+        sent to GRBL) and continue feeding from the next bit's spindle-on.
+        Falls back to a plain ``resume`` if the cursor isn't on an M0."""
+        if self.cursor in self.tool_change_at:
+            self.cursor += 1
         self.is_paused = False
 
     def abort(self) -> None:
