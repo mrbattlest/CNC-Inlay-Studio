@@ -175,24 +175,31 @@ def _design_complement(
     stock_width_mm: float = 0.0,
     stock_height_mm: float = 0.0,
 ) -> Polygon | MultiPolygon | None:
-    """Bounding rectangle of the design padded by ``padding_mm``, minus the design.
+    """The waste region to clear around the plug feature, minus the feature.
 
-    When ``stock_width_mm`` and ``stock_height_mm`` are both > 0, the bounding
-    rectangle is intersected with the user's actual wood — centered on the
-    origin — so the plug toolpath never traverses air outside the stock. This
-    makes cuts faster and avoids the bit lunging into clamps past the wood
-    edge.
+    When the user's actual plug-stock dimensions are known
+    (``stock_width_mm`` and ``stock_height_mm`` both > 0) the cleared
+    region is the **whole stock** (centered on the origin, same as the
+    centered design) minus the feature. The freeing cut runs all the way
+    to the wood edge — no fixed margin around the design — so the plug
+    plate comes off the machine fully routed with nothing but the plug
+    feature standing, and there's no leftover border of contrasting wood
+    to saw or plane away. The SVG/design bounding box does not bound the
+    cut in this case.
+
+    When stock dimensions aren't set, fall back to the design's bounding
+    box expanded by ``padding_mm`` on every side.
     """
-    minx, miny, maxx, maxy = geom.bounds
-    bounding = box(
-        minx - padding_mm, miny - padding_mm,
-        maxx + padding_mm, maxy + padding_mm,
-    )
     if stock_width_mm > 0 and stock_height_mm > 0:
         # Stock is centered on origin (the design is already centered).
         sx, sy = stock_width_mm / 2.0, stock_height_mm / 2.0
-        stock_rect = box(-sx, -sy, sx, sy)
-        bounding = bounding.intersection(stock_rect)
+        bounding = box(-sx, -sy, sx, sy)
+    else:
+        minx, miny, maxx, maxy = geom.bounds
+        bounding = box(
+            minx - padding_mm, miny - padding_mm,
+            maxx + padding_mm, maxy + padding_mm,
+        )
     complement = bounding.difference(geom)
     if not complement.is_valid:
         complement = make_valid(complement)

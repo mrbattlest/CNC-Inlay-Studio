@@ -86,6 +86,11 @@ class ControlPanel(QWidget):
     streamPauseRequested = Signal()
     streamResumeRequested = Signal()
     streamAbortRequested = Signal()
+    # The On-Machine box switches to "surfacing mode" when the user is on
+    # the Surfacing preview tab — there's no streamable side there, so
+    # instead of Dry/Run buttons it shows a single button that opens the
+    # Surface-plug-backing planner (same as Settings → Surface plug backing…).
+    openSurfacingRequested = Signal()
     grblConfigRequested = Signal()
     grblUnlockRequested = Signal()
     grblRawCommandRequested = Signal(str)
@@ -539,6 +544,18 @@ class ControlPanel(QWidget):
 
         grid.addWidget(self._dry_btn, 0, 0)
         grid.addWidget(self._run_btn, 0, 1)
+
+        # Shown instead of Dry/Run when the Surfacing preview tab is
+        # active — surfacing isn't a streamable side, so the box just
+        # offers a shortcut to the planner dialog. Spans both columns.
+        self._surfacing_btn = QPushButton("🪚 Surface plug backing…")
+        self._surfacing_btn.setToolTip(
+            "Open the Surface-plug-backing planner (same as "
+            "Settings → Surface plug backing…)."
+        )
+        self._surfacing_btn.clicked.connect(self.openSurfacingRequested.emit)
+        self._surfacing_btn.setVisible(False)
+        grid.addWidget(self._surfacing_btn, 0, 0, 1, 2)
         layout.addLayout(grid)
 
         # Coloured scrub bar replacing the old plain progress bar. Each
@@ -625,12 +642,31 @@ class ControlPanel(QWidget):
         self._snap_next_bit_btn.setEnabled(False)
         self._run_from_cursor_btn.setEnabled(False)
 
+    def set_surfacing_mode(self, on: bool) -> None:
+        """Toggle the On-Machine box between the normal streamable-side
+        layout (Dry/Run buttons + scrub bar) and surfacing mode (a single
+        button that opens the Surface-plug-backing planner). Called from
+        MainWindow whenever the active preview tab changes."""
+        self._surfacing_btn.setVisible(on)
+        for w in (
+            self._dry_btn, self._run_btn,
+            self._scrub_bar, self._scrub_side_label,
+            self._snap_next_bit_btn, self._run_from_cursor_btn,
+        ):
+            w.setVisible(not on)
+        if on:
+            self._stream_status_label.setText(
+                "Surfacing — use the planner button above."
+            )
+
     def show_scrub_side(self, side: str) -> None:
         """Public — wired from MainWindow's main-tab change handler so
         the scrub bar AND the Run / Dry Run buttons auto-track the
         active preview tab. Idempotent and silent when the requested
-        side has no registered program (e.g. user is on the Finished
-        or Surfacing tab)."""
+        side has no registered program (e.g. user hasn't clicked
+        Preview yet)."""
+        # Leaving surfacing mode whenever a streamable side is shown.
+        self.set_surfacing_mode(False)
         if side not in self._scrub_programs:
             return
         self._scrub_side = side

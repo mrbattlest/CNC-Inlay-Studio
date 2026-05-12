@@ -811,6 +811,8 @@ class MainWindow(QMainWindow):
             self._tool_change_dialog.hide
         )
         self._control_panel.streamAbortRequested.connect(self._controller.stream_abort)
+        # On-Machine box in surfacing mode → open the planner dialog.
+        self._control_panel.openSurfacingRequested.connect(self._on_open_surfacing_dialog)
         # Scrub-bar wiring: live position preview while dragging, and
         # "▶ Run from cursor" → confirm + start_stream(start_line=N).
         self._control_panel.scrubPositionChanged.connect(self._on_scrub_preview)
@@ -1572,17 +1574,30 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _on_main_tab_changed(self, index: int) -> None:
-        """Mirror the main-area preview tab into the On-Machine scrub
-        bar so the run-from-cursor timeline always matches what the
-        operator is looking at. Tabs other than Pocket / Plug
-        (Finished, Surfacing) leave the scrub bar showing whatever
-        side was last visible — switching to those tabs isn't
-        meaningful for the run-from-cursor flow."""
+        """Mirror the main-area preview tab into the On-Machine box so
+        what you can run always matches what you're looking at:
+
+          * Pocket / Plug → that side's Dry/Run buttons + scrub timeline.
+          * Surfacing     → surfacing mode (a button that opens the
+                            Surface-plug-backing planner — there's no
+                            streamable side for surfacing here).
+          * Finished      → leave the streamable buttons in place
+                            (showing whichever side was last active);
+                            just make sure we're not stuck in surfacing
+                            mode after coming from the Surfacing tab.
+
+        Also called after Preview (via _refresh_scrub_programs) so a
+        freshly-computed result doesn't reset the box to Pocket when the
+        user is sitting on the Plug tab."""
         label = self._main_tabs.tabText(index).strip().lower()
         if label == "pocket":
             self._control_panel.show_scrub_side("pocket")
         elif label == "plug":
             self._control_panel.show_scrub_side("plug")
+        elif label == "surfacing":
+            self._control_panel.set_surfacing_mode(True)
+        else:  # "finished" or anything unexpected
+            self._control_panel.set_surfacing_mode(False)
 
     def _on_open_surfacing_dialog(self) -> None:
         """Settings → Surface plug backing… — open the surfacing planner."""
@@ -2465,6 +2480,12 @@ class MainWindow(QMainWindow):
                 for i, (s, e, name) in enumerate(idx.segments)
             ]
             self._control_panel.set_scrub_program(side, idx.total_lines, segments)
+
+        # Both sides are now registered; re-sync the On-Machine box to
+        # whichever preview tab the user is actually on (set_scrub_program
+        # defaults to the first side registered = pocket, which would be
+        # wrong if they're looking at Plug or Surfacing).
+        self._on_main_tab_changed(self._main_tabs.currentIndex())
 
     def _on_scrub_preview(self, side: str, line: int) -> None:
         """Scrub handle moved — update the matching 3D canvas's bit-position
