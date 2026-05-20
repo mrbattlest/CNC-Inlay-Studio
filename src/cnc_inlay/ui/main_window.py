@@ -309,12 +309,18 @@ class MainWindow(QMainWindow):
         self._pocket_stack.addWidget(self._pocket_canvas2d)  # index 1 = top-down
         self._pocket_canvas3d.viewModeToggled.connect(self._on_pocket_view_mode_changed)
         self._pocket_canvas2d.viewModeToggled.connect(self._on_pocket_view_mode_changed)
+        self._pocket_canvas2d.feedbackSelectionMade.connect(
+            lambda r: self._on_feedback_selection_made("pocket", r)
+        )
 
         self._plug_stack = QStackedWidget(self)
         self._plug_stack.addWidget(self._plug_canvas3d)
         self._plug_stack.addWidget(self._plug_canvas2d)
         self._plug_canvas3d.viewModeToggled.connect(self._on_plug_view_mode_changed)
         self._plug_canvas2d.viewModeToggled.connect(self._on_plug_view_mode_changed)
+        self._plug_canvas2d.feedbackSelectionMade.connect(
+            lambda r: self._on_feedback_selection_made("plug", r)
+        )
 
         # The third top-level tab: assembled inlay rendered with wood-species
         # textures so the user can sanity-check colour pairings before cutting.
@@ -2486,6 +2492,90 @@ class MainWindow(QMainWindow):
         # defaults to the first side registered = pocket, which would be
         # wrong if they're looking at Plug or Surfacing).
         self._on_main_tab_changed(self._main_tabs.currentIndex())
+
+    def _on_feedback_selection_made(self, side: str, rect) -> None:
+        """User shift-dragged a rectangle on a 2D canvas. Build the
+        feedback context + snippet builder and open the dialog. Clears
+        the canvas overlay after the dialog closes either way (Cancel
+        or Copy)."""
+        from PySide6.QtCore import QRectF
+        from cnc_inlay.ui.feedback import FeedbackContext, build_feedback_snippet
+        from cnc_inlay.ui.feedback_dialog import FeedbackDialog
+        import cnc_inlay
+
+        canvas = self._pocket_canvas2d if side == "pocket" else self._plug_canvas2d
+        # rect is in design work-coord mm with Y up (the canvas's
+        # scale(1, -1) puts +Y at the top, matching G-code convention).
+        rect_mm = (rect.left(), rect.top(), rect.right(), rect.bottom())
+        # QRectF.top() < bottom() *after* normalisation, but our Y-up
+        # transform means top() is the smaller Y. Re-normalise as min/max.
+        miny = min(rect_mm[1], rect_mm[3])
+        maxy = max(rect_mm[1], rect_mm[3])
+        minx = min(rect_mm[0], rect_mm[2])
+        maxx = max(rect_mm[0], rect_mm[2])
+        rect_tup = (minx, miny, maxx, maxy)
+
+        # Resolve current state into a FeedbackContext.
+        params = self._controls.current_params()
+        endmill = self._controls.current_endmill()
+        vbit = self._controls.current_vbit() if hasattr(self._controls, "current_vbit") else None
+        pocket_mat = self._controls.current_pocket_material() if hasattr(self._controls, "current_pocket_material") else None
+        plug_mat = self._controls.current_plug_material() if hasattr(self._controls, "current_plug_material") else None
+        tab_label = self._main_tabs.tabText(self._main_tabs.currentIndex())
+        # The user can shift-drag from either the 2D or 3D view of a tab;
+        # the signal only comes from 2D today, so we report "2D" here.
+        view_mode = "2D"
+        ctx = FeedbackContext(
+            project_path=self._current_project_path,
+            app_version=getattr(cnc_inlay, "__version__", "unknown"),
+            tab_name=tab_label,
+            view_mode=view_mode,
+            design_w_mm=(self._design.width_mm if self._design else 0.0),
+            design_h_mm=(self._design.height_mm if self._design else 0.0),
+            design_rotation_quarters=int(self._design_rotation_quarters),
+            pocket_depth_mm=float(params.pocket_depth_mm),
+            glue_gap_mm=float(params.glue_gap_mm),
+            xy_tolerance_mm=float(params.xy_tolerance_mm),
+            pass_depth_mm=float(params.pass_depth_mm),
+            skip_pocket_vbit=bool(getattr(params, "skip_pocket_vbit", True)),
+            pocket_material=(pocket_mat.name if pocket_mat else "—"),
+            plug_material=(plug_mat.name if plug_mat else "—"),
+            endmill_name=(endmill.name if endmill else "—"),
+            vbit_name=(vbit.name if vbit else None),
+            pocket_roughing_bits=list(params.pocket_roughing_bits or []),
+            plug_roughing_bits=list(params.plug_roughing_bits or []),
+        )
+
+        # Pull the active side's chains + the design polygon for the
+        # localised summary. Both are optional — if no Preview has been
+        # run, the snippet just reports the static context + selection.
+        side_chains = None
+        design_geom = None
+        if self._result is not None:
+            side_result = (
+                self._result.pocket if side == "pocket" else self._result.plug
+            )
+            side_chains = getattr(side_result, "bit_chains", None)
+        if self._design is not None and self._design.polygon is not None:
+            from cnc_inlay.core.pipeline import _center_polygon, _mirror_x
+            centered = _center_polygon(self._design.polygon)
+            design_geom = (
+                centered if side == "pocket" else _mirror_x(centered)
+            )
+
+        def _build(comment: str) -> str:
+            return build_feedback_snippet(
+                ctx, rect_tup,
+                side_bit_chains=side_chains,
+                design_geom=design_geom,
+                comment=comment,
+            )
+
+        dlg = FeedbackDialog(_build, self)
+        try:
+            dlg.exec()
+        finally:
+            canvas.clear_feedback_selection()
 
     def _on_scrub_preview(self, side: str, line: int) -> None:
         """Scrub handle moved — update the matching 3D canvas's bit-position

@@ -156,7 +156,7 @@ def _params_from_dict(d: dict) -> InlayParams:
         plug_stock_height_mm=float(d.get("plug_stock_height_mm", 0.0)),
         pocket_roughing_bits=list(d.get("pocket_roughing_bits", [])),
         plug_roughing_bits=list(d.get("plug_roughing_bits", [])),
-        skip_pocket_vbit=bool(d.get("skip_pocket_vbit", False)),
+        skip_pocket_vbit=bool(d.get("skip_pocket_vbit", True)),
         pocket_allowance_mm=float(d.get("pocket_allowance_mm", 0.1)),
         surface_clearance_mm=float(d.get("surface_clearance_mm", 2.5)),
         bit_speed_overrides={

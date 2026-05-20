@@ -130,6 +130,10 @@ class PreviewCanvas(QGraphicsView):
     # 3D | Top toggle on this 2D canvas, MainWindow flips the parent
     # QStackedWidget back to the 3D side.
     viewModeToggled = Signal(str)
+    # Emitted when the user finishes a shift+drag rectangle selection,
+    # carrying the selected area in design work-coord mm (QRectF with
+    # Y-up). MainWindow picks this up to open the feedback dialog.
+    feedbackSelectionMade = Signal(QRectF)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -235,6 +239,13 @@ class PreviewCanvas(QGraphicsView):
 
         self._machine_marker_item: QGraphicsPathItem | None = None
         self._stock_outline_item: QGraphicsPathItem | None = None
+
+        # Shift-drag rectangle selection (for the "Copy area feedback"
+        # workflow). _selection_anchor_scene is the press-point in scene
+        # coords; _selection_rect_item is the live overlay; the rect is
+        # cleared after the dialog opens via clear_feedback_selection().
+        self._selection_anchor_scene: QPointF | None = None
+        self._selection_rect_item: QGraphicsPathItem | None = None
 
     # ---------------------------------------------------------------- design
 
@@ -558,6 +569,81 @@ class PreviewCanvas(QGraphicsView):
         pen.setWidthF(2.5 if kind == "machine" else 2.0)
         self._machine_marker_item = self._scene.addPath(path, pen)
         self._machine_marker_item.setZValue(10)
+
+    # ----------------------------------------------------- area-feedback
+    # Shift + left-drag draws a selection rectangle in design coordinates
+    # (instead of panning the view). On release we emit
+    # ``feedbackSelectionMade`` so MainWindow can open the snippet dialog.
+    # The rectangle stays visible until ``clear_feedback_selection`` is
+    # called (after the dialog closes), so the user has visual confirmation
+    # of what got captured.
+    def mousePressEvent(self, event):
+        if (
+            event.button() == Qt.LeftButton
+            and event.modifiers() & Qt.ShiftModifier
+        ):
+            self._selection_anchor_scene = self.mapToScene(event.pos())
+            self._update_selection_overlay(
+                self._selection_anchor_scene, self._selection_anchor_scene
+            )
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._selection_anchor_scene is not None:
+            self._update_selection_overlay(
+                self._selection_anchor_scene, self.mapToScene(event.pos())
+            )
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if (
+            self._selection_anchor_scene is not None
+            and event.button() == Qt.LeftButton
+        ):
+            end = self.mapToScene(event.pos())
+            anchor = self._selection_anchor_scene
+            self._selection_anchor_scene = None
+            rect = QRectF(anchor, end).normalized()
+            # Refuse near-zero selections — those are accidental
+            # shift-clicks, not real area picks.
+            if rect.width() < 0.5 or rect.height() < 0.5:
+                self._clear_selection_overlay()
+                event.accept()
+                return
+            self.feedbackSelectionMade.emit(rect)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _update_selection_overlay(self, a: QPointF, b: QPointF) -> None:
+        rect = QRectF(a, b).normalized()
+        path = QPainterPath()
+        path.addRect(rect)
+        if self._selection_rect_item is None:
+            pen = QPen(QColor("#f5a623"))
+            pen.setCosmetic(True)
+            pen.setWidthF(1.5)
+            pen.setStyle(Qt.DashLine)
+            brush = QBrush(QColor(245, 166, 35, 60))
+            self._selection_rect_item = self._scene.addPath(path, pen, brush)
+            self._selection_rect_item.setZValue(20)  # above everything
+        else:
+            self._selection_rect_item.setPath(path)
+
+    def _clear_selection_overlay(self) -> None:
+        if self._selection_rect_item is not None:
+            self._scene.removeItem(self._selection_rect_item)
+            self._selection_rect_item = None
+
+    def clear_feedback_selection(self) -> None:
+        """Public: drop the visible selection overlay. Called by MainWindow
+        after the feedback dialog closes so the canvas goes back to its
+        normal state."""
+        self._clear_selection_overlay()
 
     def wheelEvent(self, event):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15

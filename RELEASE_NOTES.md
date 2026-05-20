@@ -1,31 +1,28 @@
-- **Tool-change pause now lets you jog and re-zero Z.** When a multi-bit
-  job pauses for a bit swap, the controller no longer sends the `M0` to
-  GRBL — sending it put GRBL into the *Hold* state, where jog (`$J=`) and
-  Set Z = 0 (`G10`) are both rejected, forcing you to Abort and restart
-  from the cursor. Instead the streamer parks itself just before the
-  `M0`, GRBL drains its buffer and settles to *Idle* (the spindle is
-  already off), so the Jog buttons and **Set Z = 0** work normally. Click
-  **Resume cut** and it skips the `M0` and continues with the next bit's
-  spindle-on — no Abort, no run-from-cursor needed.
+- **Pocket V-bit pass is now skipped by default.** Investigating the
+  Two-Dachshunds project we found that running the V-bit on the pocket
+  side requires shrinking the cleared region inward by the V-bit's
+  lateral reach (L = depth × tan(half-angle)) so the cone has wall-wedge
+  to carve. On designs with narrow features — letter strokes, animal
+  ears, dachshund legs, anything thinner than ~2L — that inward shrink
+  either eats the feature or rounds its sharp concave corners, and the
+  matching plug-feature points then can't seat into the rounded
+  notches. Shipping **Skip pocket V-bit (plug only) = ON** as the new
+  default means the pocket-finishing endmill cuts right up to the
+  actual design boundary with vertical walls; the plug still gets its
+  full V-bit pass, so the visible joint is still a sharp tapered line
+  (the plug's V-walls compress into the vertical pocket walls on first
+  seating and self-shave to fit). Existing projects keep whatever value
+  was saved; you can toggle the checkbox in the sidebar to opt back in
+  per-project.
 
-- **Coarse bits no longer gouge thin features.** The medial-axis cleanup
-  pass — which mops up the slivers a bit's offset rings can't reach — was
-  running the bit down the centerline of features narrower than the bit
-  itself (e.g. a 6.35 mm endmill down a 4 mm-wide letter stroke or a 2 mm
-  border), cutting 1+ mm past the wall on each side and, on tight
-  geometry, plowing a trench straight through the design. It now checks
-  the local feature width at every point and only cuts where the bit
-  actually fits inside the wall; where it doesn't fit, that material
-  stays uncut (and shows up in the coverage report) instead of being
-  destroyed. You can now safely experiment with a larger endmill as the
-  finishing bit — it just won't touch features it physically can't handle.
-
-- **Live bit-position indicator no longer flickers during a cut.** The
-  spindle cone and coordinate readout were jumping to a slightly-ahead
-  position and snapping back several times a second. The scrub bar was
-  pulling its handle forward to track streaming progress and, as a side
-  effect, repainting the cone at the *programmed* coordinates of the
-  latest-sent G-code line — which runs ahead of where the bit physically
-  is because of GRBL's planner + serial buffer. The cone is now driven
-  solely by GRBL's status reports, so it tracks the real bit position
-  smoothly.
+- **Area-feedback selection.** Shift-drag a rectangle on the Pocket or
+  Plug top-down (2D) preview to capture a clipboard snippet for sending
+  to me. The snippet includes the project path + content hash, app
+  version, active tab, the selected area in work-coord mm, the local
+  feature half-width inside the selection (= smallest bit-radius that
+  can fit), and a per-bit summary of how many chains actually touch the
+  region. A small dialog opens with a textbox for your observation and
+  a Copy to Clipboard button. Paste it back to me with your comment and
+  I can diagnose without having to re-load the project and triangulate
+  which "neck" or "ear" you mean. 3D-view selection and the surfacing
+  tab will come in a follow-up.

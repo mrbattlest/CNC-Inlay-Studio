@@ -119,15 +119,20 @@ class InlayParams:
     # sequences are independent.
     pocket_roughing_bits: list[str] = field(default_factory=list)
     plug_roughing_bits: list[str] = field(default_factory=list)
-    # Skip the V-bit pass on the pocket side. Useful for designs with
-    # very thin features (the V-bit's lateral cone widening at the
-    # surface can erode wood that sits adjacent to a tight cavity wall
-    # — e.g. a dog's collar in a multi-feature silhouette). The plug
-    # still gets its V-bit pass so the inserted plug seats tightly at
-    # the visible surface; the pocket walls stay vertical, which means
-    # the plug only contacts the pocket at the top edge but the visible
-    # joint is still a sharp clean line.
-    skip_pocket_vbit: bool = False
+    # Skip the V-bit pass on the pocket side (default ON since v1.2.7).
+    # When the V-bit cone widens at the surface, the pocket-side cleared
+    # region is shrunk inward by that width (L = depth × tan(half-angle))
+    # so the cone has wall-wedge to carve. On designs with narrow features
+    # (letter strokes, dachshund ears, animal legs, etc.) that inward
+    # shrink either eats the feature entirely or rounds its sharp concave
+    # corners — and the matching plug-feature points then can't seat into
+    # those rounded notches. Skipping the pocket V-bit removes the shrink:
+    # the pocket walls stay vertical and the flat-finishing endmill cuts
+    # right up to the actual design boundary. The plug still gets the
+    # V-bit, so the visible joint is still a sharp tapered line — the
+    # plug's V-walls compress into the vertical pocket walls on first
+    # seating and self-shave to fit.
+    skip_pocket_vbit: bool = True
     # POCKET-only V-carve wall slack (mm). Buffers the design polygon
     # outward by this amount before generating the V-carve toolpath,
     # widening the resulting walls slightly so the plug doesn't bind

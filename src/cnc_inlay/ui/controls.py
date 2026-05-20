@@ -1953,7 +1953,7 @@ class ControlsPanel(QWidget):
         for name, cb in self._plug_roughing_checks.items():
             cb.setChecked(name in params.plug_roughing_bits)
         self.skip_pocket_vbit_check.setChecked(
-            getattr(params, "skip_pocket_vbit", False)
+            getattr(params, "skip_pocket_vbit", True)
         )
         # Per-bit speed overrides — stash any whose tab doesn't exist yet
         # (new bits will get them on the next _refresh_speeds_tabs).
