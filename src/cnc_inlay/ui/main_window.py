@@ -2346,6 +2346,42 @@ class MainWindow(QMainWindow):
                 canvas.set_pocket_clear(result.plug.clear_preview)
             canvas.set_boundary([])
 
+        # Per-bit swept-area overlays for the 2D canvases. Computed once
+        # here so the toggle on the canvas is instant. Each entry is
+        # (bit_name, legend_colour, shapely_polygon). V-bits skipped — at
+        # full depth their tip is a point, so the swept area is just a
+        # line and not informative for the "do bits overlap?" question
+        # the toggle exists to answer.
+        from cnc_inlay.core.pipeline import _chains_swept_area
+        from cnc_inlay.ui.theme import color_for_bit_index
+
+        def _per_bit_swept(bit_chains):
+            out = []
+            for i, (bit, chains, _role, _dur) in enumerate(bit_chains or []):
+                if getattr(bit, "type", "endmill") == "vbit":
+                    continue
+                rad = bit.diameter_mm / 2.0
+                try:
+                    sw = _chains_swept_area(chains, rad)
+                except Exception:
+                    sw = None
+                if sw is None or sw.is_empty:
+                    continue
+                out.append((bit.name, color_for_bit_index(i), sw))
+            return out
+
+        try:
+            self._pocket_canvas2d.set_bit_swept_areas(
+                _per_bit_swept(result.pocket.bit_chains)
+            )
+            self._plug_canvas2d.set_bit_swept_areas(
+                _per_bit_swept(result.plug.bit_chains)
+            )
+        except Exception:
+            # Swept-area visualisation is best-effort; never block a
+            # successful Preview because the overlay couldn't render.
+            pass
+
         # Build a recommendation message that prioritises coverage warnings,
         # since those mean the current bit will physically fail to clear regions.
         rec_lines: list[str] = []
@@ -2399,6 +2435,35 @@ class MainWindow(QMainWindow):
                 f"the design is narrower than {frag.min_feature_mm:.1f} mm — "
                 "the plug will likely break during glue-up. Use a larger bit, "
                 "simplify the design, or auto-simplify before running."
+            )
+        # Pre-cut feature-width preflight: features narrower than the
+        # smallest flat endmill are physically unreachable — they'll stay
+        # uncut on the pocket and the matching plug-feature points will
+        # stand proud. Surface a clear warning so the operator can decide
+        # BEFORE cutting whether to add a smaller bit / clean the SVG /
+        # accept the artifact.
+        pf = getattr(result, "preflight", None)
+        if pf is not None and pf.sub_bit_count > 0:
+            top_lines = []
+            for sp in pf.top_spots[:5]:
+                top_lines.append(
+                    f"     • centre ({sp.cx_mm:+.1f}, {sp.cy_mm:+.1f}) mm, "
+                    f"area {sp.area_mm2:.2f} mm², "
+                    f"max width {sp.max_feature_width_mm:.2f} mm"
+                )
+            extra = (
+                f" (showing 5 of {pf.sub_bit_count})"
+                if pf.sub_bit_count > 5 else ""
+            )
+            rec_lines.append(
+                f"⚠ Preflight: {pf.sub_bit_count} feature"
+                f"{'s' if pf.sub_bit_count != 1 else ''} "
+                f"narrower than the smallest bit ({pf.smallest_bit_name}, "
+                f"⌀ {pf.smallest_bit_diameter_mm:.2f} mm) — "
+                f"total {pf.sub_bit_total_area_mm2:.1f} mm² will stay uncut "
+                f"and the matching plug points will stand proud. "
+                f"Top spots{extra}:\n"
+                + "\n".join(top_lines)
             )
         if result.recommendation:
             r = result.recommendation

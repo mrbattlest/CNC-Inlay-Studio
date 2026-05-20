@@ -272,6 +272,33 @@ class SurfacingPlan:
 
 
 @dataclass
+class PreflightSpot:
+    """A region of the design where the local feature width is below the
+    smallest flat-endmill diameter. The bit can't fit there, so the spot
+    stays uncut — the matching plug-feature point will stand proud."""
+    cx_mm: float
+    cy_mm: float
+    area_mm2: float
+    max_feature_width_mm: float  # 2× max distance-to-boundary in the spot
+
+
+@dataclass
+class FeaturePreflight:
+    """Pre-cut analysis of where the smallest bit physically can't fit.
+
+    Reports the total area and the worst N hot-spots so the operator can
+    decide BEFORE running: live with the artifact, add a smaller bit, or
+    clean up the SVG. Computed in run_pipeline by rasterising the design
+    and thresholding the distance transform at ``smallest_bit_radius``.
+    """
+    smallest_bit_diameter_mm: float
+    smallest_bit_name: str
+    sub_bit_total_area_mm2: float
+    sub_bit_count: int
+    top_spots: list[PreflightSpot]   # largest-area-first, capped at 20
+
+
+@dataclass
 class PipelineResult:
     pocket: Side
     plug: Side
@@ -279,6 +306,7 @@ class PipelineResult:
     recommendation: Recommendation | None = None
     fragility: "FragilityReport | None" = None
     stock_fit: StockFitReport | None = None
+    preflight: FeaturePreflight | None = None
     # Geometry of what will actually be visible as plug wood in the assembled
     # inlay, accounting for which features the bits can physically reach.
     # Thin features narrower than the smallest pocket bit's diameter remain
@@ -1242,13 +1270,145 @@ def run_pipeline(
         centered, pocket_bit_d, plug_bit_d, job.params.xy_tolerance_mm
     )
 
+    # Preflight: find spots where the smallest flat endmill can't fit.
+    # Those areas stay uncut on the pocket; the matching plug-feature
+    # points will stand proud. Run on the same centered design at the
+    # job's resolution; never raises (returns None on any failure).
+    smallest_d, smallest_name = _smallest_flat_bit(
+        job.endmill, job.params.pocket_roughing_bits, bit_library
+    )
+    preflight = _compute_feature_preflight(
+        centered, smallest_d, smallest_name, job.params.resolution_mm
+    )
+
     _report(100, "Done.")
     return PipelineResult(
         pocket=pocket, plug=plug, coverage=coverage,
         recommendation=recommendation, fragility=fragility,
-        stock_fit=stock_fit,
+        stock_fit=stock_fit, preflight=preflight,
         finished_geometry=finished_geometry,
     )
+
+
+def _smallest_flat_bit(
+    endmill: Bit, roughing_names: list[str], bit_library: list[Bit] | None
+) -> tuple[float, str]:
+    """Smallest-diameter flat endmill in the pocket lineup (= the
+    finishing endmill OR any smaller roughing endmill — unusual but
+    possible). Returns (diameter_mm, name). V-bits don't count."""
+    smallest = endmill
+    by_name = {b.name: b for b in (bit_library or [])}
+    for n in roughing_names or []:
+        b = by_name.get(n)
+        if b is None or getattr(b, "type", "endmill") == "vbit":
+            continue
+        if b.diameter_mm > 0 and b.diameter_mm < smallest.diameter_mm:
+            smallest = b
+    return (smallest.diameter_mm, smallest.name)
+
+
+def _compute_feature_preflight(
+    geom: Polygon | MultiPolygon,
+    smallest_bit_diameter_mm: float,
+    smallest_bit_name: str,
+    resolution_mm: float,
+) -> "FeaturePreflight | None":
+    """Find features narrower than the smallest flat endmill.
+
+    Uses the medial axis (skeleton) of the design: at each skeleton
+    pixel, ``distance_px`` is the local inscribed-circle radius =
+    half-feature-width. Skeleton pixels where that's below the bit
+    radius mark genuinely-too-narrow features. We deliberately do NOT
+    flag the design's boundary strip (= every foreground pixel within
+    bit_radius of the wall), because the bit's flute sweeps that strip
+    when it traces the outermost offset ring — it isn't actually uncut.
+
+    Approximate footprint of each too-narrow stretch = the skeleton
+    pixels dilated by their local half-width × 2. Then connected
+    components → one spot per cluster, with centroid + footprint area.
+    """
+    if smallest_bit_diameter_mm <= 0 or geom is None or geom.is_empty:
+        return None
+    try:
+        from cnc_inlay.geometry.medial_axis import compute_skeleton
+        from cnc_inlay.geometry.shape import rasterize
+        import numpy as _np
+        from scipy import ndimage as _ndi
+        # Finer resolution than the toolpath compute — narrow spots are
+        # the whole point and need pixel accuracy. 0.05 mm caps the
+        # raster at a few-megapixel image even for big designs.
+        res = min(resolution_mm, 0.05)
+        mask, transform = rasterize(geom, resolution_mm=res, pad_px=2)
+        if not mask.any():
+            return None
+        skel = compute_skeleton(mask, prune_spurs=False)
+        dist_px = skel.distance_px
+        bit_r_px = smallest_bit_diameter_mm / (2.0 * res)
+        # The skeleton's distance value AT a skeleton pixel = the
+        # inscribed-circle radius of the feature there. < bit_r ⇒ the
+        # bit physically can't fit in that feature.
+        narrow_skel = skel.skeleton & (dist_px < bit_r_px)
+        if not narrow_skel.any():
+            return FeaturePreflight(
+                smallest_bit_diameter_mm=smallest_bit_diameter_mm,
+                smallest_bit_name=smallest_bit_name,
+                sub_bit_total_area_mm2=0.0,
+                sub_bit_count=0, top_spots=[],
+            )
+        # Approximate the FEATURE footprint by dilating each narrow
+        # skeleton pixel by its own local distance (the feature width
+        # there). This grows the 1-px-wide skeleton trace back out to
+        # the feature width, so the area number is meaningful (≈ the
+        # uncut area you'll have on the pocket).
+        # Cap the dilation kernel at ceil(2 * bit_r_px) since we only
+        # care about features below bit width — anything wider isn't in
+        # this set.
+        kernel_radius = max(1, int(_np.ceil(bit_r_px)))
+        struct = _ndi.generate_binary_structure(2, 2)
+        footprint = _ndi.binary_dilation(
+            narrow_skel, structure=struct, iterations=kernel_radius
+        ) & mask
+        if not footprint.any():
+            return FeaturePreflight(
+                smallest_bit_diameter_mm=smallest_bit_diameter_mm,
+                smallest_bit_name=smallest_bit_name,
+                sub_bit_total_area_mm2=0.0,
+                sub_bit_count=0, top_spots=[],
+            )
+        labels, n_components = _ndi.label(footprint)
+        px_area = res * res
+        spots: list[PreflightSpot] = []
+        sums = _ndi.sum(_np.ones_like(footprint), labels, index=range(1, n_components + 1))
+        centroids = _ndi.center_of_mass(footprint, labels, index=range(1, n_components + 1))
+        max_dist = _ndi.maximum(
+            dist_px * narrow_skel, labels, index=range(1, n_components + 1)
+        )
+        total_area = 0.0
+        for i, count in enumerate(sums):
+            area = float(count) * px_area
+            if area < 0.10:  # ignore sub-0.10 mm² rasterisation noise
+                continue
+            cy_px, cx_px = centroids[i]
+            cx_mm, cy_mm = transform.pixel_to_mm(
+                _np.array([cy_px]), _np.array([cx_px])
+            )
+            spots.append(PreflightSpot(
+                cx_mm=float(cx_mm[0]),
+                cy_mm=float(cy_mm[0]),
+                area_mm2=area,
+                max_feature_width_mm=2.0 * float(max_dist[i]) * res,
+            ))
+            total_area += area
+        spots.sort(key=lambda s: -s.area_mm2)
+        return FeaturePreflight(
+            smallest_bit_diameter_mm=smallest_bit_diameter_mm,
+            smallest_bit_name=smallest_bit_name,
+            sub_bit_total_area_mm2=total_area,
+            sub_bit_count=len(spots),
+            top_spots=spots[:20],
+        )
+    except Exception:
+        return None
 
 
 def compute_surfacing_plan(

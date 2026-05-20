@@ -128,5 +128,40 @@ def apply_theme(app: QApplication) -> None:
         QStatusBar {{ background: {PANEL.name()}; color: {TEXT_DIM.name()}; }}
         QSplitter::handle {{ background: {GRID.name()}; }}
         QScrollArea {{ border: none; }}
+        /* Checkbox indicators: the default Fusion-on-dark indicators almost
+           disappear into the panel background. Give them an explicit 1.5 px
+           amber border and a slightly larger box so the un/checked state is
+           obvious at a glance. Same treatment for QRadioButton. */
+        QCheckBox::indicator, QGroupBox::indicator {{
+            width: 16px; height: 16px;
+            border: 1.5px solid {ACCENT.name()};
+            border-radius: 3px;
+            background: {PANEL.name()};
+        }}
+        QCheckBox::indicator:hover, QGroupBox::indicator:hover {{
+            background: #3a3320;
+        }}
+        QCheckBox::indicator:checked, QGroupBox::indicator:checked {{
+            background: {ACCENT.name()};
+        }}
+        QCheckBox::indicator:checked:hover, QGroupBox::indicator:checked:hover {{
+            background: #ffb945;
+        }}
+        QCheckBox::indicator:disabled, QGroupBox::indicator:disabled {{
+            border-color: #5b4d2a;
+            background: {PANEL.name()};
+        }}
+        QCheckBox::indicator:checked:disabled, QGroupBox::indicator:checked:disabled {{
+            background: #5b4d2a;
+        }}
+        QRadioButton::indicator {{
+            width: 16px; height: 16px;
+            border: 1.5px solid {ACCENT.name()};
+            border-radius: 9px;
+            background: {PANEL.name()};
+        }}
+        QRadioButton::indicator:checked {{
+            background: {ACCENT.name()};
+        }}
         """
     )

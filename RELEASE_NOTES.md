@@ -1,28 +1,30 @@
-- **Pocket V-bit pass is now skipped by default.** Investigating the
-  Two-Dachshunds project we found that running the V-bit on the pocket
-  side requires shrinking the cleared region inward by the V-bit's
-  lateral reach (L = depth × tan(half-angle)) so the cone has wall-wedge
-  to carve. On designs with narrow features — letter strokes, animal
-  ears, dachshund legs, anything thinner than ~2L — that inward shrink
-  either eats the feature or rounds its sharp concave corners, and the
-  matching plug-feature points then can't seat into the rounded
-  notches. Shipping **Skip pocket V-bit (plug only) = ON** as the new
-  default means the pocket-finishing endmill cuts right up to the
-  actual design boundary with vertical walls; the plug still gets its
-  full V-bit pass, so the visible joint is still a sharp tapered line
-  (the plug's V-walls compress into the vertical pocket walls on first
-  seating and self-shave to fit). Existing projects keep whatever value
-  was saved; you can toggle the checkbox in the sidebar to opt back in
-  per-project.
+- **Bit-swept-area overlay toggle.** A new "▦ Swept areas" button
+  appears on the Pocket and Plug top-down (2D) previews after you
+  click Preview. Toggle it on to see each bit's *actual swept
+  footprint* — translucent coloured fills sized to the bit diameter
+  — instead of just chain centerlines. Lets you verify visually that
+  adjacent bits actually overlap (no gap between e.g. the 1/4" and
+  the 2 mm) and that no bit's edge runs past the design boundary,
+  without having to read centerline geometry and guess. The fills
+  use the same per-bit legend colours as the chains.
 
-- **Area-feedback selection.** Shift-drag a rectangle on the Pocket or
-  Plug top-down (2D) preview to capture a clipboard snippet for sending
-  to me. The snippet includes the project path + content hash, app
-  version, active tab, the selected area in work-coord mm, the local
-  feature half-width inside the selection (= smallest bit-radius that
-  can fit), and a per-bit summary of how many chains actually touch the
-  region. A small dialog opens with a textbox for your observation and
-  a Copy to Clipboard button. Paste it back to me with your comment and
-  I can diagnose without having to re-load the project and triangulate
-  which "neck" or "ear" you mean. 3D-view selection and the surfacing
-  tab will come in a follow-up.
+- **Pre-cut design preflight.** Preview now runs a medial-axis
+  feature-width pass against the smallest flat endmill in your
+  lineup. Any design feature whose *local* width is below the
+  smallest bit's diameter is flagged in the sidebar's recommendation
+  panel with: total uncuttable area, count of hot-spots, and the top
+  5 hot-spots' centre coordinates + areas + max widths. Now you find
+  out about sub-bit features (and the matching plug points that
+  won't seat) BEFORE you cut, not after.
+
+  Critically, the preflight only flags features that are *genuinely*
+  too narrow (skeleton-restricted) — it doesn't count the legitimate
+  boundary strip every design has near its wall, which the bit's
+  flute clears via the outermost offset ring. So when the preflight
+  says "X mm² will stay uncut" that's the real uncut area.
+
+- **Checkbox indicators are now visible.** The Fusion-on-dark default
+  for QCheckBox / QRadioButton was nearly invisible against the panel
+  background. They now get a 1.5 px amber border (unchecked) and
+  filled amber (checked), so you can see at a glance which options
+  are on. Same treatment for the GroupBox-collapse boxes.

@@ -247,6 +247,33 @@ class PreviewCanvas(QGraphicsView):
         self._selection_anchor_scene: QPointF | None = None
         self._selection_rect_item: QGraphicsPathItem | None = None
 
+        # Per-bit swept-area overlay (toggleable). Each bit's swept
+        # polygon is added to the scene as a translucent fill with the
+        # bit's legend colour; hidden by default; a floating "▦ Swept"
+        # button below the zoom toolbar toggles them on. Lets the user
+        # verify visually that each bit's actual cutting footprint
+        # covers the design boundary, instead of having to read chain
+        # centerlines and guess at overlap.
+        from PySide6.QtWidgets import QPushButton
+        self._swept_area_items: list[QGraphicsPathItem] = []
+        self._swept_toggle_btn = QPushButton("▦ Swept areas", self)
+        self._swept_toggle_btn.setCheckable(True)
+        self._swept_toggle_btn.setToolTip(
+            "Toggle the translucent overlay showing each bit's actual "
+            "swept footprint (centerline ± bit radius). Reveals where "
+            "two bits really do overlap vs leave a gap."
+        )
+        self._swept_toggle_btn.setStyleSheet(
+            "QPushButton { background: rgba(38,42,49,220); color: #e8e8ea; "
+            "border: 1px solid #3a3f47; border-radius: 4px; "
+            "padding: 3px 8px; font-size: 11px; }"
+            "QPushButton:hover { border-color: #f5a623; color: #f5a623; }"
+            "QPushButton:checked { background: #f5a623; color: #15171b; "
+            "border-color: #f5a623; font-weight: 600; }"
+        )
+        self._swept_toggle_btn.clicked.connect(self._on_swept_toggled)
+        self._swept_toggle_btn.hide()  # only visible after Preview pushes data
+
     # ---------------------------------------------------------------- design
 
     def set_design(self, geom: Polygon | MultiPolygon | None) -> None:
@@ -315,6 +342,97 @@ class PreviewCanvas(QGraphicsView):
         self._bit_legend.setMinimumWidth(260)
         self._bit_legend.show()
         self._position_bit_legend()
+
+    def set_bit_swept_areas(
+        self, per_bit: list[tuple[str, QColor, object]]
+    ) -> None:
+        """Push a per-bit swept-area list to the canvas. Each entry is
+        (bit_name, colour, shapely Polygon/MultiPolygon). The polygons
+        are added to the scene as translucent fills, hidden by default.
+        The "▦ Swept areas" toggle button reveals them.
+
+        Pass an empty list (or call with the swept areas the next time)
+        to clear prior overlays.
+        """
+        # Wipe any prior overlays.
+        for item in self._swept_area_items:
+            self._scene.removeItem(item)
+        self._swept_area_items.clear()
+        if not per_bit:
+            self._swept_toggle_btn.hide()
+            return
+        for _name, color, poly in per_bit:
+            if poly is None:
+                continue
+            try:
+                empty = poly.is_empty
+            except Exception:
+                continue
+            if empty:
+                continue
+            polys = (
+                list(poly.geoms)
+                if poly.geom_type.startswith("Multi") else [poly]
+            )
+            for p in polys:
+                path = QPainterPath()
+                try:
+                    ext = list(p.exterior.coords)
+                except Exception:
+                    continue
+                if len(ext) < 3:
+                    continue
+                path.moveTo(ext[0][0], ext[0][1])
+                for x, y in ext[1:]:
+                    path.lineTo(x, y)
+                path.closeSubpath()
+                for ring in p.interiors:
+                    coords = list(ring.coords)
+                    if len(coords) < 3:
+                        continue
+                    path.moveTo(coords[0][0], coords[0][1])
+                    for x, y in coords[1:]:
+                        path.lineTo(x, y)
+                    path.closeSubpath()
+                # Translucent fill in the bit's colour; thin matching outline.
+                fill = QColor(color)
+                fill.setAlpha(70)
+                pen = QPen(QColor(color))
+                pen.setCosmetic(True)
+                pen.setWidthF(0.5)
+                item = self._scene.addPath(path, pen, QBrush(fill))
+                # Below the toolpath centerlines (chains live at Z=2+)
+                # but above the design fill (Z=0) so the operator sees
+                # the bit's actual cut footprint coloured-in on top of
+                # the design silhouette.
+                item.setZValue(1)
+                item.setVisible(self._swept_toggle_btn.isChecked())
+                self._swept_area_items.append(item)
+        self._swept_toggle_btn.show()
+        self._position_swept_toggle()
+
+    def _on_swept_toggled(self, checked: bool) -> None:
+        for item in self._swept_area_items:
+            item.setVisible(checked)
+
+    def _position_swept_toggle(self) -> None:
+        """Anchor the swept-areas toggle below the zoom toolbar in the
+        top-right corner. Called from resizeEvent and right after data
+        push (when the button first becomes visible)."""
+        self._swept_toggle_btn.adjustSize()
+        margin = 12
+        # Zoom toolbar is anchored just below the view-mode toggle. Stack
+        # ours one row below that.
+        try:
+            top_offset = (
+                self._view_toggle.height() + 6
+                + self._zoom_toolbar.height() + 6
+            )
+        except Exception:
+            top_offset = 80
+        x = max(margin, self.width() - self._swept_toggle_btn.width() - margin)
+        y = max(margin, margin + top_offset)
+        self._swept_toggle_btn.move(x, y)
 
     def set_boundary(self, chains: list[Chain]) -> None:
         self._boundary_chains = chains or []
@@ -503,6 +621,7 @@ class PreviewCanvas(QGraphicsView):
         )
         self._info_overlay.position_bottom_left(self.width(), self.height())
         self._position_bit_legend()
+        self._position_swept_toggle()
 
     def _position_bit_legend(self) -> None:
         # Don't gate on isVisible(): when the canvas is on the inactive tab
