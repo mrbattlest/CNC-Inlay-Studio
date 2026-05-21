@@ -64,6 +64,12 @@ SCREW_HOLE_LABEL_POSITIONS = [
 ]
 _BED_COLOR = "#7ea799"  # muted teal/green for bed boundary
 
+# Direction-chevron half-length, in DEVICE PIXELS. Arrows are drawn as
+# ItemIgnoresTransformations items so they keep this size at every zoom
+# level — they no longer balloon into something that reads as a cut path
+# when the user zooms in.
+_ARROW_SIZE_PX = 5.0
+
 
 def apply_active_machine(machine) -> None:
     """Update the module-level bed constants from a CNCMachine profile.
@@ -543,10 +549,15 @@ class PreviewCanvas(QGraphicsView):
         cut_pen.setWidthF(1.6)
         arrow_pen = QPen(color)
         arrow_pen.setCosmetic(True)
-        arrow_pen.setWidthF(2.2)
+        arrow_pen.setWidthF(2.0)
 
         cuts_path = QPainterPath()
-        arrows_path = QPainterPath()
+        # Direction chevrons are drawn as individual screen-fixed items
+        # (ItemIgnoresTransformations) so they stay a constant pixel size
+        # at any zoom. Previously they were scene geometry batched into
+        # one path — zooming in blew them up until they read as cut
+        # paths. _ARROW_SIZE_PX is their half-length in device pixels.
+        arrow_markers: list[tuple[float, float, float, float]] = []
         for chain in chains:
             if len(chain) < 2:
                 continue
@@ -555,21 +566,30 @@ class PreviewCanvas(QGraphicsView):
             for x, y, _ in chain[1:]:
                 cuts_path.lineTo(x, y)
             for pt, direction in chevron_markers(chain):
-                tri = chevron_polyline_2d(pt, direction, size_mm=1.5)
-                arrows_path.moveTo(*tri[0])
-                for q in tri[1:]:
-                    arrows_path.lineTo(*q)
+                arrow_markers.append((pt[0], pt[1], direction[0], direction[1]))
 
         if not cuts_path.isEmpty():
             item = self._scene.addPath(cuts_path, cut_pen)
             item.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
             item.setZValue(z)
             target.append(item)
-        if not arrows_path.isEmpty():
-            arrow_item = self._scene.addPath(arrows_path, arrow_pen)
-            arrow_item.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
-            arrow_item.setZValue(z + 0.1)
-            target.append(arrow_item)
+        for px, py, dx, dy in arrow_markers:
+            # Build the chevron around the local origin in PIXEL units.
+            # The view applies scale(1, -1); an ItemIgnoresTransformations
+            # item skips that flip, so negate dy to keep the arrow
+            # pointing the right way on screen.
+            tri = chevron_polyline_2d(
+                (0.0, 0.0, 0.0), (dx, -dy), size_mm=_ARROW_SIZE_PX
+            )
+            apath = QPainterPath()
+            apath.moveTo(*tri[0])
+            for q in tri[1:]:
+                apath.lineTo(*q)
+            a_item = self._scene.addPath(apath, arrow_pen)
+            a_item.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+            a_item.setPos(px, py)
+            a_item.setZValue(z + 0.1)
+            target.append(a_item)
 
         # Travel moves between consecutive chains: one combined path.
         travel_pen = QPen(TRAVEL)

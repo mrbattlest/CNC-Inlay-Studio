@@ -805,9 +805,27 @@ def _rest_machine_chains(
             target = region
         else:
             try:
-                target = region.difference(cumulative_cleared).buffer(0)
+                # Rest-machining seam overlap: grow this bit's residual
+                # back INTO the already-cleared zone by one full bit
+                # diameter before computing its offset rings. Without the
+                # overlap, the residual's outer edge IS the scalloped
+                # seam of the previous (larger) bit's sweep, and this
+                # bit's first offset ring sits one radius inside that —
+                # leaving a thin uncut crescent / triangle right at the
+                # bit-to-bit boundary. Letting the smaller bit re-trace
+                # a diameter-wide band of already-milled (flat-bottomed)
+                # wood is harmless and closes the seam completely.
+                overlap = bit.diameter_mm
+                eroded = cumulative_cleared.buffer(-overlap)
+                if eroded.is_empty:
+                    target = region
+                else:
+                    target = region.difference(eroded).buffer(0)
             except Exception:
-                target = region
+                try:
+                    target = region.difference(cumulative_cleared).buffer(0)
+                except Exception:
+                    target = region
         # Smaller-bit cleanup is restricted to the priority region (e.g.
         # the band around the plug feature). The largest bit still does
         # its full bulk pass on ``region`` so nothing gets skipped on the
@@ -1157,23 +1175,11 @@ def _smallest_bit_diameter_mm(
     return min(diameters)
 
 
-def _finished_geometry_from_swept(
-    pocket_side: "Side",
-    centered: Polygon | MultiPolygon,
-    params: InlayParams,
-    vbit: Bit | None,
+def _pocket_swept_union(
+    pocket_side: "Side", params: InlayParams
 ) -> Polygon | MultiPolygon | None:
-    """Visible plug area in the finished inlay, derived from the ACTUAL
-    pocket toolpaths.
-
-    The plug only shows where the pocket is genuinely hollowed out — so
-    the finished geometry is the union of every pocket bit's swept disk
-    footprint, clipped to the design and shrunk by xy_tolerance. Unlike
-    the morphological-opening estimate this changes whenever the bit
-    lineup, V-bit, or step-over changes, because it's measured off the
-    real chains. Returns None when there are no pocket chains to measure
-    (caller falls back to the opening estimate).
-    """
+    """Union of every pocket bit's actual swept footprint. None when
+    there are no pocket chains to measure."""
     bit_chains = getattr(pocket_side, "bit_chains", None)
     if not bit_chains:
         return None
@@ -1186,11 +1192,10 @@ def _finished_geometry_from_swept(
             # finished face. Buffer the tip path by L.
             try:
                 from cnc_inlay.toolpath.vbit_walls import vbit_lateral_reach_mm
-                r = vbit_lateral_reach_mm(
+                r = max(0.05, vbit_lateral_reach_mm(
                     bit.angle_deg, params.pocket_depth_mm,
                     shank_diameter_mm=getattr(bit, "shank_mm", 0.0),
-                )
-                r = max(0.05, r)
+                ))
             except Exception:
                 r = 0.1
         else:
@@ -1202,12 +1207,43 @@ def _finished_geometry_from_swept(
         if s is None or s.is_empty:
             continue
         swept = s if swept is None else swept.union(s).buffer(0)
+    return swept
+
+
+def _pocket_cavity_from_swept(
+    pocket_side: "Side",
+    centered: Polygon | MultiPolygon,
+    params: InlayParams,
+) -> Polygon | MultiPolygon | None:
+    """The pocket cavity as it will ACTUALLY be cut: the union of every
+    pocket bit's swept footprint, clipped to the design. No xy_tolerance
+    shrink — that's the plug side's job. Returns None if unmeasurable."""
+    swept = _pocket_swept_union(pocket_side, params)
     if swept is None or swept.is_empty:
         return None
     try:
-        visible = swept.intersection(centered).buffer(0)
+        cavity = swept.intersection(centered).buffer(0)
     except Exception:
-        visible = swept
+        cavity = swept
+    if cavity.is_empty or not isinstance(cavity, (Polygon, MultiPolygon)):
+        return None
+    return cavity
+
+
+def _finished_geometry_from_swept(
+    pocket_side: "Side",
+    centered: Polygon | MultiPolygon,
+    params: InlayParams,
+    vbit: Bit | None,
+) -> Polygon | MultiPolygon | None:
+    """Visible plug area in the finished inlay, derived from the ACTUAL
+    pocket toolpaths: the cut cavity, shrunk by xy_tolerance. Unlike the
+    morphological-opening estimate this changes whenever the bit lineup,
+    V-bit, or step-over changes. Returns None when unmeasurable (caller
+    falls back to the opening estimate)."""
+    visible = _pocket_cavity_from_swept(pocket_side, centered, params)
+    if visible is None:
+        return None
     if params.xy_tolerance_mm > 0:
         try:
             shrunk = visible.buffer(-params.xy_tolerance_mm).buffer(0)
@@ -1217,9 +1253,7 @@ def _finished_geometry_from_swept(
             pass
     if visible.is_empty:
         return None
-    if isinstance(visible, (Polygon, MultiPolygon)):
-        return visible
-    return None
+    return visible
 
 
 def _achievable_finished_geometry(
@@ -1294,9 +1328,23 @@ def run_pipeline(
         vbit=job.vbit,
         progress_cb=progress_cb, progress_lo=2.0, progress_hi=48.0,
     )
+
+    # The plug must mate with the pocket as it's ACTUALLY cut, not with
+    # the ideal design. Wherever a bit couldn't fully reach the pocket —
+    # a sub-bit nose tip, a tight concave corner — the cavity falls short
+    # of the drawing. If the plug were still cut to the ideal design, its
+    # matching feature would stand proud and hit unmilled pocket wood. So
+    # the plug side is generated from the pocket's real swept cavity: the
+    # plug feature is trimmed to exactly what the pocket can receive.
+    # Falls back to the ideal design if the cavity can't be measured.
+    plug_geom = centered
+    pocket_cavity = _pocket_cavity_from_swept(pocket, centered, job.params)
+    if pocket_cavity is not None and not pocket_cavity.is_empty:
+        plug_geom = pocket_cavity
+
     _report(48, "Generating plug toolpaths…")
     plug = _generate_plug_side(
-        job.design, centered, job.endmill, job.plug_material, job.params, title,
+        job.design, plug_geom, job.endmill, job.plug_material, job.params, title,
         bit_library=bit_library,
         vbit=job.vbit,
         progress_cb=progress_cb, progress_lo=48.0, progress_hi=94.0,
