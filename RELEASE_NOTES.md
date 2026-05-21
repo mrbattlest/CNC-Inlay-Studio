@@ -1,30 +1,19 @@
-- **Bit-swept-area overlay toggle.** A new "▦ Swept areas" button
-  appears on the Pocket and Plug top-down (2D) previews after you
-  click Preview. Toggle it on to see each bit's *actual swept
-  footprint* — translucent coloured fills sized to the bit diameter
-  — instead of just chain centerlines. Lets you verify visually that
-  adjacent bits actually overlap (no gap between e.g. the 1/4" and
-  the 2 mm) and that no bit's edge runs past the design boundary,
-  without having to read centerline geometry and guess. The fills
-  use the same per-bit legend colours as the chains.
+- **Finished tab now reflects the actual cut.** Previously the
+  Finished preview was driven by a morphological-opening estimate of
+  the design — it modelled the smallest finishing bit's reach but
+  didn't change when you toggled roughing bits, the V-bit, or the
+  step-over, so it looked like nothing more than a wood-grain styling
+  of the SVG.
 
-- **Pre-cut design preflight.** Preview now runs a medial-axis
-  feature-width pass against the smallest flat endmill in your
-  lineup. Any design feature whose *local* width is below the
-  smallest bit's diameter is flagged in the sidebar's recommendation
-  panel with: total uncuttable area, count of hot-spots, and the top
-  5 hot-spots' centre coordinates + areas + max widths. Now you find
-  out about sub-bit features (and the matching plug points that
-  won't seat) BEFORE you cut, not after.
+  It's now built from the **real pocket toolpaths**: the visible plug
+  area is the union of every pocket bit's actual swept footprint,
+  clipped to the design and shrunk by xy_tolerance. Change the bit
+  lineup, re-Preview, and the finished preview changes with it —
+  because it's measured off the chains the machine will really cut.
 
-  Critically, the preflight only flags features that are *genuinely*
-  too narrow (skeleton-restricted) — it doesn't count the legitimate
-  boundary strip every design has near its wall, which the bit's
-  flute clears via the outermost offset ring. So when the preflight
-  says "X mm² will stay uncut" that's the real uncut area.
-
-- **Checkbox indicators are now visible.** The Fusion-on-dark default
-  for QCheckBox / QRadioButton was nearly invisible against the panel
-  background. They now get a 1.5 px amber border (unchecked) and
-  filled amber (checked), so you can see at a glance which options
-  are on. Same treatment for the GroupBox-collapse boxes.
+  And the spots the bits genuinely can't reach — features narrower
+  than the smallest bit, sharp concave corners, the V-bit shrink
+  zone — are now **hatched in red** directly on the preview, with a
+  caption reporting the total shortfall area ("⚠ red = N mm² the bits
+  can't cut"). You can see exactly where the finished piece will
+  deviate from the drawing before you cut a single millimetre of wood.

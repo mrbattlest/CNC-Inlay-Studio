@@ -930,18 +930,32 @@ class MainWindow(QMainWindow):
 
     def _refresh_finished_canvas(self) -> None:
         """Re-push the achievable plug geometry + material names into the
-        Finished tab. Uses the pipeline's ``finished_geometry`` (which models
-        the bit's reach) when a preview has been computed; otherwise prompts
-        the user to run preview, since the raw SVG would mislead about thin
+        Finished tab. Uses the pipeline's ``finished_geometry`` — now built
+        from the ACTUAL pocket toolpath swept areas, so it changes whenever
+        the bit lineup does — and also passes the ideal (as-drawn) design
+        so the canvas can hatch the shortfall in red. Prompts for a Preview
+        when no result exists, since the raw SVG would mislead about thin
         features that won't actually be cut.
         """
         if self._result is not None and self._result.finished_geometry is not None:
             polygon = self._result.finished_geometry
             preview_pending = False
+            # Ideal = the as-drawn design, centred to the same frame the
+            # pipeline used (so achievable vs ideal line up for the diff).
+            ideal = None
+            if self._design is not None and self._design.polygon is not None:
+                from cnc_inlay.core.pipeline import _center_polygon
+                try:
+                    ideal = _center_polygon(self._design.polygon)
+                except Exception:
+                    ideal = None
         else:
             polygon = None
+            ideal = None
             preview_pending = self._design is not None
-        self._finished_canvas.set_design(polygon, preview_pending=preview_pending)
+        self._finished_canvas.set_design(
+            polygon, ideal=ideal, preview_pending=preview_pending
+        )
         pocket_mat = self._controls.current_pocket_material()
         plug_mat = self._controls.current_plug_material()
         self._finished_canvas.set_materials(

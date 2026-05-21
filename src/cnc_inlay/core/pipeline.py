@@ -1157,6 +1157,71 @@ def _smallest_bit_diameter_mm(
     return min(diameters)
 
 
+def _finished_geometry_from_swept(
+    pocket_side: "Side",
+    centered: Polygon | MultiPolygon,
+    params: InlayParams,
+    vbit: Bit | None,
+) -> Polygon | MultiPolygon | None:
+    """Visible plug area in the finished inlay, derived from the ACTUAL
+    pocket toolpaths.
+
+    The plug only shows where the pocket is genuinely hollowed out — so
+    the finished geometry is the union of every pocket bit's swept disk
+    footprint, clipped to the design and shrunk by xy_tolerance. Unlike
+    the morphological-opening estimate this changes whenever the bit
+    lineup, V-bit, or step-over changes, because it's measured off the
+    real chains. Returns None when there are no pocket chains to measure
+    (caller falls back to the opening estimate).
+    """
+    bit_chains = getattr(pocket_side, "bit_chains", None)
+    if not bit_chains:
+        return None
+    swept: Polygon | MultiPolygon | None = None
+    for entry in bit_chains:
+        bit, chains = entry[0], entry[1]
+        if getattr(bit, "type", "endmill") == "vbit":
+            # The V-bit cone reaches its full lateral width L only at the
+            # surface — that's the footprint that matters for the visible
+            # finished face. Buffer the tip path by L.
+            try:
+                from cnc_inlay.toolpath.vbit_walls import vbit_lateral_reach_mm
+                r = vbit_lateral_reach_mm(
+                    bit.angle_deg, params.pocket_depth_mm,
+                    shank_diameter_mm=getattr(bit, "shank_mm", 0.0),
+                )
+                r = max(0.05, r)
+            except Exception:
+                r = 0.1
+        else:
+            r = bit.diameter_mm / 2.0
+        try:
+            s = _chains_swept_area(chains, r)
+        except Exception:
+            s = None
+        if s is None or s.is_empty:
+            continue
+        swept = s if swept is None else swept.union(s).buffer(0)
+    if swept is None or swept.is_empty:
+        return None
+    try:
+        visible = swept.intersection(centered).buffer(0)
+    except Exception:
+        visible = swept
+    if params.xy_tolerance_mm > 0:
+        try:
+            shrunk = visible.buffer(-params.xy_tolerance_mm).buffer(0)
+            if not shrunk.is_empty:
+                visible = shrunk
+        except Exception:
+            pass
+    if visible.is_empty:
+        return None
+    if isinstance(visible, (Polygon, MultiPolygon)):
+        return visible
+    return None
+
+
 def _achievable_finished_geometry(
     centered: Polygon | MultiPolygon,
     pocket_bit_diameter_mm: float,
@@ -1266,9 +1331,20 @@ def run_pipeline(
     plug_bit_d = _smallest_bit_diameter_mm(
         job.endmill, job.params.plug_roughing_bits, bit_library
     )
-    finished_geometry = _achievable_finished_geometry(
-        centered, pocket_bit_d, plug_bit_d, job.params.xy_tolerance_mm
+    # Finished-inlay geometry. Prefer the swept-area model — it's built
+    # from the ACTUAL computed pocket toolpaths, so it reflects every
+    # bit choice, the V-bit shrink, the medial-axis bit-fits guard, and
+    # the rest-machining residual. Where the pocket genuinely isn't
+    # hollowed out, the plug can't seat → that spot shows pocket wood.
+    # Fall back to the morphological-opening estimate only when there
+    # are no pocket chains to measure (degenerate single-bit edge case).
+    finished_geometry = _finished_geometry_from_swept(
+        pocket, centered, job.params, job.vbit
     )
+    if finished_geometry is None:
+        finished_geometry = _achievable_finished_geometry(
+            centered, pocket_bit_d, plug_bit_d, job.params.xy_tolerance_mm
+        )
 
     # Preflight: find spots where the smallest flat endmill can't fit.
     # Those areas stay uncut on the pocket; the matching plug-feature
