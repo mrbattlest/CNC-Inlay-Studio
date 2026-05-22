@@ -94,3 +94,21 @@ def test_snippet_reports_uncut_region_when_no_chains_touch_rect():
         side_bit_chains=[{"bit_name": "x", "chains": [[(50.0, 50.0, -1.0)]]}],
     )
     assert "No toolpath chains touch this area" in snip
+
+
+def test_snippet_extra_sides_reports_both_pocket_and_plug():
+    # Finished-tab style: both sides, each with its own rect.
+    pocket = [{"bit_name": "pocket-bit", "chains": [[(2.0, 2.0, -1.0), (3.0, 3.0, -1.0)]]}]
+    plug = [{"bit_name": "plug-bit", "chains": [[(-3.0, 2.0, -1.0), (-2.0, 3.0, -1.0)]]}]
+    snip = build_feedback_snippet(
+        _ctx(tab_name="Finished"),
+        rect_mm=(0.0, 0.0, 10.0, 10.0),
+        extra_sides=[
+            ("Pocket", pocket, (0.0, 0.0, 10.0, 10.0)),
+            ("Plug", plug, (-10.0, 0.0, 0.0, 10.0)),
+        ],
+    )
+    assert "touching this area on the Pocket side" in snip
+    assert "pocket-bit" in snip
+    assert "touching this area on the Plug side" in snip
+    assert "plug-bit" in snip

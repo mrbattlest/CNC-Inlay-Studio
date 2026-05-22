@@ -136,6 +136,7 @@ def build_feedback_snippet(
     side_bit_chains: list | None = None,
     design_geom: Polygon | None = None,
     comment: str = "",
+    extra_sides: list | None = None,
 ) -> str:
     """Build the markdown snippet for one selection rectangle.
 
@@ -144,6 +145,13 @@ def build_feedback_snippet(
     from the PipelineResult (so we can summarise what bits touch the
     rect). ``design_geom`` is the centred design polygon (so we can
     report the local feature half-width).
+
+    ``extra_sides`` — used for the Finished tab, where one selection
+    spans both sides — is a list of ``(label, bit_chains, rect_tuple)``.
+    Each entry gets its own "Toolpaths touching this area" subsection.
+    The per-side rect differs because the plug toolpaths live in the
+    X-mirrored frame, so the caller passes a mirrored rect for the plug.
+    When ``extra_sides`` is given it replaces the single-side summary.
     """
     minx, miny, maxx, maxy = rect_mm
     w = maxx - minx
@@ -191,24 +199,33 @@ def build_feedback_snippet(
             f"max {max_hw:.2f} mm  (smallest bit-radius that fits: ≥ {min_hw:.2f} mm)"
         )
 
-    # Toolpath summary localised to the selection.
-    if side_bit_chains:
-        per_bit = _bits_in_rect(side_bit_chains, rect_mm)
+    # Toolpath summary localised to the selection. The Finished tab
+    # passes ``extra_sides`` (both pocket and plug); the Pocket/Plug
+    # tabs pass a single ``side_bit_chains``.
+    def _emit_side_summary(label: str, bit_chains, side_rect) -> None:
+        per_bit = _bits_in_rect(bit_chains, side_rect)
+        lines.append("")
         if per_bit:
-            lines.append("")
-            lines.append(f"### Toolpaths touching this area on the {ctx.tab_name} side")
+            lines.append(f"### Toolpaths touching this area on the {label} side")
             for bit_name, n_ch, n_pts, z_min, z_max in per_bit:
-                z_note = f"Z=[{z_min:.2f}, {z_max:.2f}]"
-                lines.append(f"- {bit_name}: {n_ch} chains, {n_pts} pts, {z_note}")
+                lines.append(
+                    f"- {bit_name}: {n_ch} chains, {n_pts} pts, "
+                    f"Z=[{z_min:.2f}, {z_max:.2f}]"
+                )
         else:
-            lines.append("")
             lines.append(
-                f"### No toolpath chains touch this area on the {ctx.tab_name} side."
+                f"### No toolpath chains touch this area on the {label} side."
             )
             lines.append(
                 "  (= this region is uncut — either the bits can't reach it "
                 "or the design has no feature there)"
             )
+
+    if extra_sides:
+        for label, bit_chains, side_rect in extra_sides:
+            _emit_side_summary(label, bit_chains, side_rect)
+    elif side_bit_chains is not None:
+        _emit_side_summary(ctx.tab_name, side_bit_chains, rect_mm)
 
     lines.append("")
     lines.append("### Job parameters")
