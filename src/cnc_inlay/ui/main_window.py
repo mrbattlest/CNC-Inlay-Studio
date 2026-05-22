@@ -124,17 +124,20 @@ def _serialise_pipeline_result(result) -> dict:
             ],
         }
 
-    finished_geom_wkb = None
-    if result.finished_geometry is not None:
+    def _wkb_of(geom):
+        if geom is None:
+            return None
         try:
-            finished_geom_wkb = result.finished_geometry.wkb_hex
+            return geom.wkb_hex
         except Exception:
-            finished_geom_wkb = None
+            return None
 
     return {
         "pocket": _serialise_side(result.pocket),
         "plug": _serialise_side(result.plug),
-        "finished_geometry_wkb_hex": finished_geom_wkb,
+        "finished_geometry_wkb_hex": _wkb_of(result.finished_geometry),
+        "pocket_cavity_wkb_hex": _wkb_of(result.pocket_cavity_geometry),
+        "plug_feature_wkb_hex": _wkb_of(result.plug_feature_geometry),
     }
 
 
@@ -173,13 +176,14 @@ def _deserialise_pipeline_result(d: dict, bit_library: list):
             bit_chains=bit_chains,
         )
 
-    finished_geom = None
-    wkb_hex = d.get("finished_geometry_wkb_hex")
-    if wkb_hex:
+    def _geom_of(key: str):
+        wkb_hex = d.get(key)
+        if not wkb_hex:
+            return None
         try:
-            finished_geom = _wkb.loads(bytes.fromhex(wkb_hex))
+            return _wkb.loads(bytes.fromhex(wkb_hex))
         except Exception:
-            finished_geom = None
+            return None
 
     return PipelineResult(
         pocket=_deserialise_side(d["pocket"]),
@@ -188,7 +192,9 @@ def _deserialise_pipeline_result(d: dict, bit_library: list):
         recommendation=None,
         fragility=None,
         stock_fit=None,
-        finished_geometry=finished_geom,
+        finished_geometry=_geom_of("finished_geometry_wkb_hex"),
+        pocket_cavity_geometry=_geom_of("pocket_cavity_wkb_hex"),
+        plug_feature_geometry=_geom_of("plug_feature_wkb_hex"),
     )
 
 
@@ -932,32 +938,24 @@ class MainWindow(QMainWindow):
             )
 
     def _refresh_finished_canvas(self) -> None:
-        """Re-push the achievable plug geometry + material names into the
-        Finished tab. Uses the pipeline's ``finished_geometry`` — now built
-        from the ACTUAL pocket toolpath swept areas, so it changes whenever
-        the bit lineup does — and also passes the ideal (as-drawn) design
-        so the canvas can hatch the shortfall in red. Prompts for a Preview
-        when no result exists, since the raw SVG would mislead about thin
-        features that won't actually be cut.
-        """
-        if self._result is not None and self._result.finished_geometry is not None:
-            polygon = self._result.finished_geometry
+        """Re-push the pocket cavity + plug feature into the Finished tab.
+        Both come from the ACTUAL toolpaths, so the canvas can overlay the
+        tolerable glue gap (green) and the interference (red) where the
+        plug is oversize. Prompts for a Preview when no result exists."""
+        if self._result is not None:
+            cavity = getattr(self._result, "pocket_cavity_geometry", None)
+            plug = getattr(self._result, "plug_feature_geometry", None)
+            # Fall back to finished_geometry for the plug if the newer
+            # field is absent (e.g. a project cached by an older build).
+            if plug is None:
+                plug = self._result.finished_geometry
             preview_pending = False
-            # Ideal = the as-drawn design, centred to the same frame the
-            # pipeline used (so achievable vs ideal line up for the diff).
-            ideal = None
-            if self._design is not None and self._design.polygon is not None:
-                from cnc_inlay.core.pipeline import _center_polygon
-                try:
-                    ideal = _center_polygon(self._design.polygon)
-                except Exception:
-                    ideal = None
         else:
-            polygon = None
-            ideal = None
+            cavity = None
+            plug = None
             preview_pending = self._design is not None
-        self._finished_canvas.set_design(
-            polygon, ideal=ideal, preview_pending=preview_pending
+        self._finished_canvas.set_geometry(
+            cavity, plug, preview_pending=preview_pending
         )
         pocket_mat = self._controls.current_pocket_material()
         plug_mat = self._controls.current_plug_material()
@@ -2501,6 +2499,18 @@ class MainWindow(QMainWindow):
         else:
             for issue in adv.issues:
                 rec_lines.append(issue)
+        # Plug-vs-pocket interference: if the plug is oversize anywhere
+        # relative to the actual pocket cavity, it physically won't seat.
+        # Prepend it to the recommendations so it's the first thing seen.
+        interference_mm2 = self._interference_area_mm2(result)
+        if interference_mm2 > 0.05:
+            rec_lines.insert(
+                0,
+                f"⛔ INLAY WILL NOT FIT: {interference_mm2:.1f} mm² where the "
+                f"plug is oversize vs the pocket cavity (red on the Finished "
+                f"tab). The plug can't physically seat there. Fix the design "
+                f"or bit lineup before cutting."
+            )
         self._controls.set_recommendation(rec_lines)
 
         pocket_dur = _format_duration(
@@ -2520,6 +2530,43 @@ class MainWindow(QMainWindow):
         )
         self._controls.set_summary(summary)
         self._set_status("Toolpaths ready.")
+
+        # Hard stop: if the plug is oversize anywhere vs the actual pocket
+        # cavity, the inlay physically cannot be assembled. Surface that
+        # as a modal warning the operator can't miss — it's a "do not cut
+        # this" condition, not a cosmetic note.
+        if interference_mm2 > 0.05:
+            from PySide6.QtWidgets import QMessageBox
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Critical)
+            box.setWindowTitle("Inlay will not fit")
+            box.setText(
+                f"<b>The plug is oversize by {interference_mm2:.1f} mm² "
+                f"relative to the pocket.</b>"
+            )
+            box.setInformativeText(
+                "In those spots the plug stands past the pocket wall, so "
+                "the two halves cannot physically seat together.\n\n"
+                "Open the Finished tab — the interference is marked in "
+                "RED. Green areas are fine (glue-gap tolerance).\n\n"
+                "Adjust the bit lineup or the design and re-Preview "
+                "before cutting any wood."
+            )
+            box.setStandardButtons(QMessageBox.Ok)
+            box.exec()
+
+    def _interference_area_mm2(self, result) -> float:
+        """Area where the plug feature runs past the pocket cavity wall —
+        i.e. the plug is oversize and the inlay won't physically seat."""
+        cav = getattr(result, "pocket_cavity_geometry", None)
+        plug = getattr(result, "plug_feature_geometry", None)
+        if cav is None or plug is None:
+            return 0.0
+        try:
+            diff = plug.difference(cav)
+            return float(diff.area) if not diff.is_empty else 0.0
+        except Exception:
+            return 0.0
 
     def _invalidate_result(self) -> None:
         if self._result is None:

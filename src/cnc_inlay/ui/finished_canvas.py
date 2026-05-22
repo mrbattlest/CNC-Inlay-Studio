@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QWidget
 from shapely.geometry import MultiPolygon, Polygon
 
 from cnc_inlay.ui.wood_textures import texture_for
+from cnc_inlay.ui.zoom_toolbar import ZoomToolbar
 
 
 _BG_COLOR = QColor("#15171b")
@@ -45,12 +46,14 @@ class FinishedCanvas(QWidget):
         super().__init__(parent)
         self.setMinimumSize(400, 300)
         self.setAutoFillBackground(False)
-        # _design = the ACHIEVABLE plug geometry (what the bits can
-        # actually cut). _ideal = the raw design as drawn. The render
-        # fills _design with plug wood and hatches _ideal − _design in
-        # red — the spots that won't come out as designed.
-        self._design: Polygon | MultiPolygon | None = None
-        self._ideal: Polygon | MultiPolygon | None = None
+        # _plug_feature = the plug lump the bits actually leave standing.
+        # _pocket_cavity = the cavity the pocket bits actually hollow out.
+        # Both in the pocket frame. The render fills _plug_feature with
+        # plug wood, paints pocket_cavity − plug_feature green (tolerable
+        # glue gap) and plug_feature − pocket_cavity red (interference —
+        # the plug is oversize and won't physically seat).
+        self._plug_feature: Polygon | MultiPolygon | None = None
+        self._pocket_cavity: Polygon | MultiPolygon | None = None
         self._preview_pending: bool = False
         self._pocket_species: str = ""
         self._plug_species: str = ""
@@ -69,22 +72,38 @@ class FinishedCanvas(QWidget):
         self._sel_committed_mm: QRectF | None = None
         self.setMouseTracking(True)
 
+        # +/− /⌂ zoom toolbar, anchored top-right — same widget and
+        # placement the Pocket and Plug previews use.
+        self._zoom_toolbar = ZoomToolbar(self)
+        self._zoom_toolbar.zoomIn.connect(self._zoom_in)
+        self._zoom_toolbar.zoomOut.connect(self._zoom_out)
+        self._zoom_toolbar.fit.connect(self.reset_view)
+        self._zoom_toolbar.show()
+        self._zoom_toolbar.raise_()
+
     # --------------------------------------------------------- public API
 
-    def set_design(
+    def set_geometry(
         self,
-        geom: Polygon | MultiPolygon | None,
+        pocket_cavity: Polygon | MultiPolygon | None,
+        plug_feature: Polygon | MultiPolygon | None,
         *,
-        ideal: Polygon | MultiPolygon | None = None,
         preview_pending: bool = False,
     ) -> None:
-        """``geom`` is the achievable plug geometry (built from the real
-        toolpaths). ``ideal`` is the design as drawn — the difference is
-        hatched red so the user sees where the cut falls short."""
-        self._design = geom
-        self._ideal = ideal
+        """``pocket_cavity`` and ``plug_feature`` are both in the pocket
+        frame, derived from the real toolpaths. The render overlays them:
+        cavity − feature = green glue gap, feature − cavity = red
+        interference."""
+        self._pocket_cavity = pocket_cavity
+        self._plug_feature = plug_feature
         self._preview_pending = preview_pending
         self.update()
+
+    def interference_area_mm2(self) -> float:
+        """Total area where the plug is oversize vs the pocket (red).
+        > 0 means the inlay will not physically seat."""
+        red = self._compute_interference()
+        return red.area if red is not None and not red.is_empty else 0.0
 
     def set_materials(self, pocket_species: str, plug_species: str) -> None:
         self._pocket_species = pocket_species
@@ -109,7 +128,7 @@ class FinishedCanvas(QWidget):
     def _compute_transform(self):
         """Return (scale, offset_x, offset_y, stock_QRectF) for the current
         widget size + zoom + pan, or None if there's nothing to draw."""
-        bounds_geom = self._ideal if self._ideal is not None else self._design
+        bounds_geom = self._bounds_geom()
         if bounds_geom is None or bounds_geom.is_empty:
             return None
         minx, miny, maxx, maxy = bounds_geom.bounds
@@ -158,24 +177,38 @@ class FinishedCanvas(QWidget):
 
     # --------------------------------------------------------- mouse / zoom
 
-    def wheelEvent(self, event) -> None:
+    def _zoom_by(self, factor: float, anchor: QPointF) -> None:
+        """Multiply the user zoom by ``factor``, keeping the mm point
+        currently under ``anchor`` (widget px) fixed under it."""
         transform = self._compute_transform()
         if transform is None:
             return
-        cur = event.position()
-        # mm point under the cursor BEFORE the zoom change.
-        mm = self._to_mm(transform, cur.x(), cur.y())
-        factor = 1.2 if event.angleDelta().y() > 0 else 1.0 / 1.2
+        mm = self._to_mm(transform, anchor.x(), anchor.y())
         new_zoom = max(_MIN_ZOOM, min(_MAX_ZOOM, self._user_zoom * factor))
         if new_zoom == self._user_zoom:
             return
         self._user_zoom = new_zoom
-        # Shift pan so the same mm point stays under the cursor.
         t2 = self._compute_transform()
         if t2 is not None:
             new_pos = self._to_widget(t2, mm[0], mm[1])
-            self._pan += QPointF(cur.x() - new_pos.x(), cur.y() - new_pos.y())
+            self._pan += QPointF(
+                anchor.x() - new_pos.x(), anchor.y() - new_pos.y()
+            )
         self.update()
+
+    def _zoom_in(self) -> None:
+        self._zoom_by(1.25, QPointF(self.width() / 2.0, self.height() / 2.0))
+
+    def _zoom_out(self) -> None:
+        self._zoom_by(0.8, QPointF(self.width() / 2.0, self.height() / 2.0))
+
+    def wheelEvent(self, event) -> None:
+        factor = 1.2 if event.angleDelta().y() > 0 else 1.0 / 1.2
+        self._zoom_by(factor, event.position())
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._zoom_toolbar.position_top_right(self.width(), self.height())
 
     def mousePressEvent(self, event) -> None:
         if event.button() != Qt.LeftButton:
@@ -240,14 +273,14 @@ class FinishedCanvas(QWidget):
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
         # Empty-state — show a hint and bail.
-        if self._design is None or self._design.is_empty:
+        if self._plug_feature is None or self._plug_feature.is_empty:
             painter.fillRect(self.rect(), _BG_COLOR)
             painter.setPen(_LABEL_COLOR)
             if self._preview_pending:
                 msg = (
                     "Click Preview Toolpaths to see the finished inlay.\n\n"
-                    "The preview reflects what the bits can actually cut —\n"
-                    "thin features the bit can't reach will stay as pocket wood."
+                    "The preview reflects what the bits can actually cut,\n"
+                    "and how the plug seats into the pocket."
                 )
             else:
                 msg = "Load a design and pick materials\nto preview the finished inlay."
@@ -259,7 +292,7 @@ class FinishedCanvas(QWidget):
         transform = self._compute_transform()
         if transform is None:
             return
-        scale, _ox, _oy, stock = transform
+        _scale, _ox, _oy, stock = transform
 
         def to_widget(x_mm: float, y_mm: float) -> QPointF:
             return self._to_widget(transform, x_mm, y_mm)
@@ -268,58 +301,52 @@ class FinishedCanvas(QWidget):
             to_widget(stock.left(), stock.bottom()),
             to_widget(stock.right(), stock.top()),
         )
-
-        # Clip drawing to the visible widget so a zoomed-in render
-        # doesn't spill the tiled textures past the edges.
         painter.setClipRect(self.rect())
 
         # 1. Pocket wood: tile across the whole stock rectangle.
         pocket_pix = QPixmap.fromImage(texture_for(self._pocket_species))
         painter.drawTiledPixmap(stock_rect_widget, pocket_pix)
 
-        # 2. Plug wood: build the polygon path and clip-fill it.
-        path = self._polygon_to_path(self._design, to_widget)
+        # 2. Plug wood: clip-fill the plug feature with the plug texture.
+        plug_path = self._polygon_to_path(self._plug_feature, to_widget)
         plug_pix = QPixmap.fromImage(texture_for(self._plug_species))
         painter.save()
-        painter.setClipPath(path)
+        painter.setClipPath(plug_path)
         painter.drawTiledPixmap(stock_rect_widget, plug_pix)
         painter.restore()
 
-        # 2b. Shortfall — areas the design wants as plug but the bits
-        # can't actually cut. Hatched red.
-        shortfall = self._compute_shortfall()
-        if shortfall is not None and not shortfall.is_empty:
-            sf_path = self._polygon_to_path(shortfall, to_widget)
-            painter.save()
-            painter.setClipPath(sf_path)
-            painter.fillRect(stock_rect_widget, QColor(255, 40, 60, 90))
-            painter.setPen(QPen(QColor(255, 60, 80, 200), 1.0))
-            step = 7
-            x0 = int(stock_rect_widget.left())
-            x1 = int(stock_rect_widget.right())
-            y0 = int(stock_rect_widget.top())
-            y1 = int(stock_rect_widget.bottom())
-            for d in range(0, (x1 - x0) + (y1 - y0), step):
-                painter.drawLine(x0 + d, y0, x0, y0 + d)
-            painter.restore()
-            painter.setPen(QPen(QColor(255, 60, 80, 230), 1.4))
+        # 3. Green = tolerable glue gap (pocket cavity wider than plug).
+        gap = self._compute_gap()
+        if gap is not None and not gap.is_empty:
+            g_path = self._polygon_to_path(gap, to_widget)
+            painter.fillPath(g_path, QColor(40, 230, 90, 150))
+            painter.setPen(QPen(QColor(40, 230, 90, 230), 1.0))
             painter.setBrush(Qt.NoBrush)
-            painter.drawPath(sf_path)
+            painter.drawPath(g_path)
 
-        # 3. Glue-seam shadow — a thin darker outline where plug meets pocket.
+        # 4. Red = interference (plug oversize, runs past the pocket wall).
+        interference = self._compute_interference()
+        if interference is not None and not interference.is_empty:
+            r_path = self._polygon_to_path(interference, to_widget)
+            painter.fillPath(r_path, QColor(255, 35, 55, 180))
+            painter.setPen(QPen(QColor(255, 60, 80, 255), 1.6))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(r_path)
+
+        # 5. Glue-seam shadow — a thin darker outline of the plug feature.
         shadow_pen = QPen(_SHADOW_COLOR, 1.5)
         shadow_pen.setCapStyle(Qt.RoundCap)
         shadow_pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(shadow_pen)
         painter.setBrush(Qt.NoBrush)
-        painter.drawPath(path)
+        painter.drawPath(plug_path)
 
-        # 4. Stock-edge outline so the user sees the wood boundary.
+        # 6. Stock-edge outline.
         painter.setPen(QPen(QColor(0, 0, 0, 180), 1.0))
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(stock_rect_widget)
 
-        # 5. Selection rectangle (live drag or committed).
+        # 7. Selection rectangle (live drag or committed).
         sel_widget = self._sel_rect_widget
         if sel_widget is None and self._sel_committed_mm is not None:
             m = self._sel_committed_mm
@@ -328,49 +355,113 @@ class FinishedCanvas(QWidget):
                 to_widget(m.right(), m.bottom()),
             ).normalized()
         if sel_widget is not None:
-            sel_pen = QPen(_SELECT_COLOR, 1.5, Qt.DashLine)
-            painter.setPen(sel_pen)
+            painter.setPen(QPen(_SELECT_COLOR, 1.5, Qt.DashLine))
             painter.setBrush(QColor(245, 166, 35, 50))
             painter.drawRect(sel_widget)
 
-        # 6. Caption underneath: pairing + size + shortfall + zoom hint.
-        minx, miny, maxx, maxy = (
-            self._ideal if self._ideal is not None else self._design
-        ).bounds
-        caption = (
-            f"Pocket: {self._pocket_species or '—'}    "
-            f"Plug: {self._plug_species or '—'}    "
-            f"Inlay: {maxx - minx:.0f} × {maxy - miny:.0f} mm"
-        )
-        caption_rect = QRectF(0, self.height() - 26, self.width(), 22)
-        if shortfall is not None and not shortfall.is_empty:
-            painter.setPen(QColor(255, 90, 110))
-            painter.drawText(
-                caption_rect, Qt.AlignCenter,
-                caption + f"    ⚠ red = {shortfall.area:.1f} mm² the bits can't cut",
-            )
-        else:
-            painter.setPen(_LABEL_COLOR)
-            painter.drawText(caption_rect, Qt.AlignCenter, caption)
-        # Zoom hint, top-left.
+        # 8. Legend (top-right) + zoom hint (top-left).
+        self._draw_legend(painter, gap, interference)
         painter.setPen(_LABEL_COLOR)
         painter.drawText(
             QRectF(10, 6, self.width() - 20, 18),
             Qt.AlignLeft | Qt.AlignVCenter,
             "Scroll = zoom · drag = pan · Shift+drag = capture area · double-click = reset",
         )
+
+        # 9. Caption underneath: pairing + size + verdict.
+        bg = self._bounds_geom()
+        minx, miny, maxx, maxy = bg.bounds
+        caption = (
+            f"Pocket: {self._pocket_species or '—'}    "
+            f"Plug: {self._plug_species or '—'}    "
+            f"Inlay: {maxx - minx:.0f} × {maxy - miny:.0f} mm"
+        )
+        red_area = interference.area if (
+            interference is not None and not interference.is_empty
+        ) else 0.0
+        caption_rect = QRectF(0, self.height() - 26, self.width(), 22)
+        if red_area > 0.05:
+            painter.setPen(QColor(255, 90, 110))
+            painter.drawText(
+                caption_rect, Qt.AlignCenter,
+                caption + f"    ⛔ {red_area:.1f} mm² interference — plug WILL NOT seat",
+            )
+        else:
+            painter.setPen(QColor(80, 220, 120))
+            painter.drawText(
+                caption_rect, Qt.AlignCenter,
+                caption + "    ✓ plug seats — gaps are within glue tolerance",
+            )
         painter.end()
 
-    def _compute_shortfall(self):
-        """Region the design wants as plug but the achievable geometry
-        can't deliver = ideal − achievable. None when no ideal is set."""
-        if self._ideal is None or self._design is None:
+    def _draw_legend(self, painter: QPainter, gap, interference) -> None:
+        """Colour key, anchored top-right."""
+        red_area = interference.area if (
+            interference is not None and not interference.is_empty
+        ) else 0.0
+        gap_area = gap.area if (gap is not None and not gap.is_empty) else 0.0
+        rows = [
+            (QColor(40, 230, 90, 200),
+             f"Glue gap — plug fits ({gap_area:.0f} mm²)"),
+            (QColor(255, 45, 65, 220),
+             f"Interference — won't fit ({red_area:.0f} mm²)"),
+        ]
+        pad = 8
+        sw = 14      # swatch
+        row_h = 18
+        painter.setFont(painter.font())
+        fm = painter.fontMetrics()
+        text_w = max(fm.horizontalAdvance(t) for _c, t in rows)
+        box_w = pad + sw + 6 + text_w + pad
+        box_h = pad + len(rows) * row_h + pad
+        # Top-left, below the zoom-hint line — keeps clear of the zoom
+        # toolbar (+/−/⌂) anchored at the top-right.
+        x = 12
+        y = 28
+        painter.setPen(QPen(QColor(0, 0, 0, 120), 1.0))
+        painter.setBrush(QColor(20, 22, 26, 225))
+        painter.drawRoundedRect(QRectF(x, y, box_w, box_h), 6, 6)
+        for i, (color, text) in enumerate(rows):
+            ry = y + pad + i * row_h
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            painter.drawRect(QRectF(x + pad, ry + 2, sw, sw))
+            painter.setPen(_LABEL_COLOR)
+            painter.drawText(
+                QRectF(x + pad + sw + 6, ry, text_w + 4, sw + 2),
+                Qt.AlignLeft | Qt.AlignVCenter, text,
+            )
+
+    def _bounds_geom(self):
+        """Geometry used for framing — union of cavity + plug feature."""
+        geoms = [g for g in (self._pocket_cavity, self._plug_feature)
+                 if g is not None and not g.is_empty]
+        if not geoms:
+            return None
+        if len(geoms) == 1:
+            return geoms[0]
+        try:
+            return geoms[0].union(geoms[1])
+        except Exception:
+            return geoms[0]
+
+    def _compute_gap(self):
+        """Pocket cavity wider than the plug = tolerable glue gap (green)."""
+        if self._pocket_cavity is None or self._plug_feature is None:
             return None
         try:
-            diff = self._ideal.difference(self._design)
-            if diff.is_empty:
-                return None
-            return diff
+            diff = self._pocket_cavity.difference(self._plug_feature)
+            return None if diff.is_empty else diff
+        except Exception:
+            return None
+
+    def _compute_interference(self):
+        """Plug feature past the pocket wall = interference (red)."""
+        if self._pocket_cavity is None or self._plug_feature is None:
+            return None
+        try:
+            diff = self._plug_feature.difference(self._pocket_cavity)
+            return None if diff.is_empty else diff
         except Exception:
             return None
 

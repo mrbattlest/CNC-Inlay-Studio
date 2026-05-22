@@ -314,6 +314,13 @@ class PipelineResult:
     # than the smallest plug bit cannot be carved out around the plug, so they
     # merge into the surrounding plug. xy_tolerance further shrinks the plug.
     finished_geometry: Polygon | MultiPolygon | None = None
+    # Pocket cavity + plug feature, BOTH in the pocket (un-mirrored)
+    # coordinate frame, derived from the real swept toolpaths. The
+    # Finished tab overlays them: pocket_cavity − plug_feature is the
+    # tolerable glue gap (green); plug_feature − pocket_cavity is the
+    # interference where the plug is oversize and won't seat (red).
+    pocket_cavity_geometry: Polygon | MultiPolygon | None = None
+    plug_feature_geometry: Polygon | MultiPolygon | None = None
 
 
 def _emit_side(
@@ -1230,6 +1237,70 @@ def _pocket_cavity_from_swept(
     return cavity
 
 
+def _plug_feature_geometry(
+    plug_side: "Side",
+    plug_input_geom: Polygon | MultiPolygon,
+    params: InlayParams,
+) -> Polygon | MultiPolygon | None:
+    """The plug feature (the inlay lump) the plug toolpaths actually leave
+    standing, returned in the POCKET (un-mirrored) coordinate frame so it
+    can be compared directly against the pocket cavity.
+
+    The plug bits clear the complement AROUND the mirrored feature; what
+    they don't sweep, inside a generous envelope of the feature, is what
+    stands as the plug. Where the bits can't carve a tight gap, the uncut
+    waste merges into the feature — making the plug locally oversize,
+    which is exactly the interference we want the Finished tab to flag.
+    """
+    bit_chains = getattr(plug_side, "bit_chains", None)
+    if not bit_chains or plug_input_geom is None or plug_input_geom.is_empty:
+        return None
+    swept: Polygon | MultiPolygon | None = None
+    for entry in bit_chains:
+        bit, chains = entry[0], entry[1]
+        if getattr(bit, "type", "endmill") == "vbit":
+            continue  # V-bit only bevels the wall; ignore for the footprint
+        try:
+            s = _chains_swept_area(chains, bit.diameter_mm / 2.0)
+        except Exception:
+            s = None
+        if s is None or s.is_empty:
+            continue
+        swept = s if swept is None else swept.union(s).buffer(0)
+    if swept is None or swept.is_empty:
+        return None
+    # The plug side mirrors its input and shrinks it by xy_tolerance so a
+    # glue layer fits — reproduce that to get the intended feature.
+    mirrored = _mirror_x(plug_input_geom)
+    if params.xy_tolerance_mm > 0:
+        try:
+            shr = mirrored.buffer(-params.xy_tolerance_mm).buffer(0)
+            if not shr.is_empty:
+                mirrored = shr
+        except Exception:
+            pass
+    try:
+        envelope = mirrored.buffer(2.0)
+        feature = envelope.difference(swept).buffer(0)
+    except Exception:
+        feature = mirrored
+    if feature.is_empty:
+        return None
+    # Keep only the lump(s) that actually contain the design feature —
+    # discard far-field uncut waste out in the stock corners.
+    parts = list(feature.geoms) if feature.geom_type.startswith("Multi") else [feature]
+    keep = [p for p in parts if p.intersects(mirrored)]
+    if not keep:
+        return None
+    from shapely.ops import unary_union
+    feature = unary_union(keep)
+    # Back to the pocket frame.
+    unmirrored = _mirror_x(feature)
+    if unmirrored.is_empty or not isinstance(unmirrored, (Polygon, MultiPolygon)):
+        return None
+    return unmirrored
+
+
 def _finished_geometry_from_swept(
     pocket_side: "Side",
     centered: Polygon | MultiPolygon,
@@ -1405,12 +1476,23 @@ def run_pipeline(
         centered, smallest_d, smallest_name, job.params.resolution_mm
     )
 
+    # Pocket cavity + plug feature in the pocket frame, for the Finished
+    # tab's green-gap / red-interference overlay.
+    pocket_cavity_geometry = _pocket_cavity_from_swept(
+        pocket, centered, job.params
+    )
+    plug_feature_geometry = _plug_feature_geometry(
+        plug, plug_geom, job.params
+    )
+
     _report(100, "Done.")
     return PipelineResult(
         pocket=pocket, plug=plug, coverage=coverage,
         recommendation=recommendation, fragility=fragility,
         stock_fit=stock_fit, preflight=preflight,
         finished_geometry=finished_geometry,
+        pocket_cavity_geometry=pocket_cavity_geometry,
+        plug_feature_geometry=plug_feature_geometry,
     )
 
 
