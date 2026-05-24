@@ -85,6 +85,50 @@ def test_resume_past_tool_change_is_a_noop_when_not_at_m0():
     assert st.cursor == cursor
 
 
+def test_resume_preamble_rapids_xy_then_plunges_z_never_diagonal():
+    """Resume-from-cursor must never let the bit move XYZ together —
+    that would diagonal-plunge into uncut wood. The streamer's preamble
+    splits any combined move into a horizontal rapid at safe Z first,
+    then a vertical plunge down to cut depth."""
+    gcode = (
+        "G21\nG90\nG17\nG54\nG0 Z5\nM3 S10000\nG4 P3\n"
+        "G0 X10 Y20\n"
+        "G1 Z-2 F200\n"
+        "G1 X11 Y20 Z-2 F500\n"
+        "G1 X12 Y20 Z-2\n"
+        "G1 X13 Y22 Z-2\n"
+        "G0 Z5\nM5\n"
+    )
+    # Resume mid-cut on the 4th cut line — the most dangerous case
+    # because the line specifies all three axes.
+    stripped = [
+        ln for ln in gcode.splitlines()
+        if ln.strip() and not ln.strip().startswith("(")
+    ]
+    target_line = stripped.index("G1 X13 Y22 Z-2")
+
+    st = Streamer()
+    st.load(gcode, start_line=target_line)
+
+    # Locate the safe-rapid and the vertical plunge in the preamble.
+    plunge_idx = None
+    rapid_idx = None
+    for i, ln in enumerate(st.lines[: st.preamble_len]):
+        if ln.startswith("G0 ") and " X" in ln and " Y" in ln and " Z" not in ln:
+            rapid_idx = i
+        elif ln.startswith("G1 Z") and "F" in ln:
+            plunge_idx = i
+
+    assert rapid_idx is not None, "expected a horizontal-only G0 rapid"
+    assert plunge_idx is not None, "expected a vertical-only G1 Z plunge"
+    assert rapid_idx < plunge_idx, "rapid must come BEFORE the plunge"
+    # The plunge target must match the cursor's cut depth.
+    assert "Z-2" in st.lines[plunge_idx]
+    # The synthetic preamble carries the right X, Y, Z target.
+    assert "X13" in st.lines[rapid_idx]
+    assert "Y22" in st.lines[rapid_idx]
+
+
 def test_program_without_m0_streams_straight_through():
     st = Streamer()
     st.load("G21\nG90\nM3 S10000\nG1 X1 Y1 Z-1 F200\nM5\n")

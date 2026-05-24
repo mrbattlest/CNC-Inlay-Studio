@@ -3298,9 +3298,15 @@ class MainWindow(QMainWindow):
         # the scrub bar to advance correctly and for an accurate "elapsed
         # / total estimated" readout.
         self._streaming_start_line = start_line
-        # Streamer prepends a 7-line modal-state + M3 + dwell preamble on
-        # any non-zero start_line. Keep this in sync with control/streamer.py.
-        self._streaming_preamble_len = 7 if start_line > 0 else 0
+        # Streamer's load() prepends a synthetic preamble on any non-zero
+        # start_line: modal-state (G21/G90/G17/G54/G0 Z5) + M3 + dwell +
+        # optional F-word + safe rapid to (X,Y) + slow vertical plunge.
+        # Length varies (7–10 lines) depending on what it could resolve;
+        # 10 is the upper bound and gives us a worst-case-correct scrub
+        # offset. Off-by-a-few-lines in the scrub bar is harmless (it's
+        # ~msec of cut). Authoritative value lives on the streamer as
+        # ``self._controller._worker._streamer.preamble_len`` once loaded.
+        self._streaming_preamble_len = 10 if start_line > 0 else 0
 
         # Build a checkpoint for crash recovery — saved every couple of seconds
         # while the cut runs.
@@ -3440,6 +3446,14 @@ class MainWindow(QMainWindow):
         import time
         self._control_panel.set_streaming(True)
         self._stream_start_time = time.monotonic()
+        # Replace the worst-case preamble estimate with the actual length
+        # the streamer used. Safe to read here — the worker has finished
+        # load() by the time streamStarted fires.
+        try:
+            actual = int(self._controller._worker._streamer.preamble_len)
+            self._streaming_preamble_len = actual
+        except Exception:
+            pass
         # Map streamer total → original-program total (compensate for the
         # 5-line preamble the streamer prepends on a non-zero start_line).
         idx = getattr(self, "_scrub_indices", {}).get(self._streaming_side)

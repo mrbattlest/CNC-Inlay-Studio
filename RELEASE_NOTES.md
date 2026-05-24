@@ -1,24 +1,18 @@
-- **Finished tab now shows how the plug actually seats into the
-  pocket — colour-coded.** The view overlays the real pocket cavity
-  and the real plug feature (both built from the computed toolpaths)
-  and marks the mismatch:
-  - **Green** — the pocket cavity is wider than the plug. This is a
-    *tolerable* glue gap; the plug still drops in and the glue fills
-    the space.
-  - **Red** — the plug runs *past* the pocket wall. This is an
-    *intolerable* interference: the plug is physically oversize there
-    and the two halves cannot seat together.
+- **Resume-from-cursor now always rapids XY first, then plunges Z
+  straight down — never both at once.** Previously, when you resumed
+  mid-cut and the cursor landed on a line that specified all three
+  axes (the typical case), the bit would move diagonally from safe Z
+  to the target XYZ — ploughing through wood at an angle and ruining
+  the piece. The streamer's resume preamble now scans the cursor
+  region for the first absolute X / Y / Z values and inserts:
+  1. A safety re-lift to safe Z (in case Z was jogged down during
+     re-zero).
+  2. A horizontal-only `G0 X<x> Y<y>` rapid at safe Z.
+  3. A vertical-only `G1 Z<z> F100` plunge straight down at a
+     conservative feed (slower than the cut feed, in case the bit has
+     to plough through any residual at the cursor's depth).
 
-  A **legend** in the top-left names both colours with their total
-  areas. The caption gives a one-line verdict ("✓ plug seats" or
-  "⛔ N mm² interference — plug WILL NOT seat").
-
-- **Hard alert when the inlay won't fit.** If any red interference is
-  detected, Preview now raises a modal warning ("Inlay will not fit")
-  and puts a ⛔ line at the top of the sidebar recommendations — so
-  you can't accidentally cut a design whose plug won't physically
-  assemble.
-
-- **Zoom controls on the Finished tab.** A +/−/⌂ zoom toolbar now sits
-  in the top-right corner, exactly like the Pocket and Plug previews.
-  Scroll-wheel zoom, drag-to-pan, and double-click-to-reset also work.
+  Then the original G-code at the cursor resumes — but the bit is
+  already at the right position, so the first move is effectively a
+  no-op. Verified with a unit test that asserts the rapid is
+  horizontal-only AND precedes a vertical-only plunge.
