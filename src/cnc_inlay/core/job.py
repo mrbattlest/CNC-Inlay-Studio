@@ -146,6 +146,19 @@ class InlayParams:
     # Vectric / F-Engrave call this "Surface Clearance". 1.5–3.0 mm
     # is typical; default 2.5 mm (~0.1″, the Sienci Drapela value).
     surface_clearance_mm: float = 2.5
+    # Cut a small witness-mark divot at a known offset from the work
+    # origin at the very start of every program. Provides a precise
+    # physical reference for re-zeroing X/Y after a USB drop / power
+    # blip / e-stop — the operator jogs the bit-tip into the divot and
+    # the recovery wizard sets the work-zero so the divot maps to its
+    # known coordinates again. Default ON: the cut is sub-second,
+    # uses the first bit (no tool change), and lives in stock waste.
+    witness_mark_enabled: bool = True
+    # Diameter and depth of the witness divot. Small + shallow so it
+    # plunges in one pass and leaves a clearly-edged crater the
+    # operator can recentre against.
+    witness_mark_diameter_mm: float = 3.0
+    witness_mark_depth_mm: float = 1.0
 
 
 @dataclass

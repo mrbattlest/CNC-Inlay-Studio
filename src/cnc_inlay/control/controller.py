@@ -364,6 +364,10 @@ class MachineWorker(QObject):
                 self._checkpoint.last_wpos_x_mm = float(wpos.x)
                 self._checkpoint.last_wpos_y_mm = float(wpos.y)
                 self._checkpoint.last_wpos_z_mm = float(wpos.z)
+            if self._cached_wco is not None:
+                self._checkpoint.last_wco_x_mm = float(self._cached_wco.x)
+                self._checkpoint.last_wco_y_mm = float(self._cached_wco.y)
+                self._checkpoint.last_wco_z_mm = float(self._cached_wco.z)
             try:
                 save_checkpoint(self._checkpoint)
             except Exception:
@@ -471,6 +475,10 @@ class MachineWorker(QObject):
             self._checkpoint.last_wpos_x_mm = float(self._last_wpos.x)
             self._checkpoint.last_wpos_y_mm = float(self._last_wpos.y)
             self._checkpoint.last_wpos_z_mm = float(self._last_wpos.z)
+        if self._cached_wco is not None:
+            self._checkpoint.last_wco_x_mm = float(self._cached_wco.x)
+            self._checkpoint.last_wco_y_mm = float(self._cached_wco.y)
+            self._checkpoint.last_wco_z_mm = float(self._cached_wco.z)
         save_checkpoint(self._checkpoint)
 
     # -------------------------------------------------------------- private

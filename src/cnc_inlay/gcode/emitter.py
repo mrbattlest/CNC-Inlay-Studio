@@ -146,6 +146,7 @@ def emit_gcode(
     params: InlayParams,
     is_plug: bool,
     tool_change_park_xy_mm: tuple[float, float] | None = None,
+    witness_mark_xy_mm: tuple[float, float] | None = None,
 ) -> str:
     """Render a multi-section toolpath program to a complete GRBL G-code string.
 
@@ -189,6 +190,34 @@ def emit_gcode(
     # Tool-change Z lift — much higher than safe_z so the operator can
     # remove the dust shroud and access the collet. Defaults to 60 mm.
     tc_lift = params.tool_change_z_lift_mm * scale
+
+    # Witness-mark divot — cut at the very start of the program with the
+    # FIRST bit (no tool change). Gives the operator a precise physical
+    # reference point to re-zero against after a USB drop / e-stop.
+    # The Recovery Wizard knows the same (X, Y) and applies G10 L20 to
+    # restore the original work-zero from a re-jog onto this divot.
+    if witness_mark_xy_mm is not None and params.witness_mark_depth_mm > 0:
+        first_section = sections[0]
+        first_material = first_section.material
+        rpm = max(1, int(round(first_material.rpm)))
+        plunge_f = max(1.0, float(first_material.plunge_mm_min))
+        wx = witness_mark_xy_mm[0] * scale
+        wy = witness_mark_xy_mm[1] * scale
+        wd = -params.witness_mark_depth_mm * scale
+        safe_z = params.safe_z_mm * scale
+        lines.extend([
+            comment(
+                f"WITNESS MARK — recovery reference at "
+                f"({wx:.3f}, {wy:.3f}, {wd:.3f}). "
+                "Recovery Wizard re-zeros XY against this divot."
+            ),
+            f"G0 Z{safe_z:.3f}",
+            f"M3 S{rpm}",
+            "G4 P3",
+            f"G0 X{wx:.3f} Y{wy:.3f}",
+            f"G1 Z{wd:.3f} F{plunge_f:.1f}",
+            f"G0 Z{safe_z:.3f}",
+        ])
 
     for i, section in enumerate(sections):
         if i > 0:

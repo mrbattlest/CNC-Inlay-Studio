@@ -49,6 +49,15 @@ class Checkpoint:
     last_wpos_x_mm: float | None = None
     last_wpos_y_mm: float | None = None
     last_wpos_z_mm: float | None = None
+    # Last known WORK-COORDINATE OFFSET (WCO = MPos − WPos at the time
+    # of the report). Constant for the whole run unless the operator
+    # re-zeroes, and unlike last_wpos this is what's needed to restore
+    # the same work-coordinate system after a $H homing recovery —
+    # after homing, MPos is the homed position, and re-applying the
+    # saved WCO via G10 L20 P1 puts the work origin back where it was.
+    last_wco_x_mm: float | None = None
+    last_wco_y_mm: float | None = None
+    last_wco_z_mm: float | None = None
     # True when the cut ended because GRBL stopped responding (silence
     # detector fired), not a clean completion or a user abort. This
     # flag drives the "GRBL went silent — restore last known position?"

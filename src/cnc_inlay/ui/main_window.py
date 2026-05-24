@@ -687,6 +687,17 @@ class MainWindow(QMainWindow):
         surface_act.triggered.connect(self._on_open_surfacing_dialog)
         settings_menu.addAction(surface_act)
 
+        # Recovery wizard — for re-establishing XYZ work zero after a
+        # USB drop / power blip / e-stop. Offers three approaches
+        # (homing, witness divot, design-feature jog).
+        settings_menu.addSeparator()
+        recover_act = QAction("Recover work zero…", self)
+        recover_act.setStatusTip(
+            "Re-establish X/Y/Z work zero after a USB loss or e-stop"
+        )
+        recover_act.triggered.connect(self._on_open_recovery_dialog)
+        settings_menu.addAction(recover_act)
+
         # PreferencesRole auto-promotes to the macOS app menu under
         # ⌘, (next to Quit) — the standard Mac convention.
         prefs_act = QAction("Preferences…", self)
@@ -1619,6 +1630,54 @@ class MainWindow(QMainWindow):
             self._control_panel.set_surfacing_mode(True)
         else:  # "finished" or anything unexpected
             self._control_panel.set_surfacing_mode(False)
+
+    def _on_open_recovery_dialog(self) -> None:
+        """Settings → Recover work zero… — open the post-USB-loss wizard."""
+        if not self._controller.is_connected:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "Not connected",
+                "Connect to the CNC machine first — the recovery wizard "
+                "sends G-code commands directly to GRBL.",
+            )
+            return
+        # WCO saved by the most recent run (if any).
+        cp_wco = None
+        try:
+            from cnc_inlay.control.checkpoint import load_checkpoint
+            cp = load_checkpoint()
+            if cp is not None and cp.last_wco_x_mm is not None:
+                cp_wco = (
+                    float(cp.last_wco_x_mm),
+                    float(cp.last_wco_y_mm or 0.0),
+                    float(cp.last_wco_z_mm or 0.0),
+                )
+        except Exception:
+            cp_wco = None
+        # Witness-mark positions for the current design (re-derived from
+        # the deterministic formula, so no extra persistence needed).
+        params = self._controls.current_params()
+        pocket_witness = None
+        plug_witness = None
+        if (
+            self._design is not None
+            and getattr(params, "witness_mark_enabled", False)
+            and getattr(params, "witness_mark_depth_mm", 0.0) > 0
+        ):
+            from cnc_inlay.core.pipeline import witness_mark_position_mm
+            pocket_witness = witness_mark_position_mm(self._design, is_plug=False)
+            plug_witness = witness_mark_position_mm(self._design, is_plug=True)
+        from cnc_inlay.ui.recovery_dialog import RecoveryDialog
+        dlg = RecoveryDialog(
+            checkpoint_wco=cp_wco,
+            witness_xy_mm=pocket_witness,
+            witness_depth_mm=float(getattr(params, "witness_mark_depth_mm", 1.0)),
+            pocket_witness_xy_mm=pocket_witness,
+            plug_witness_xy_mm=plug_witness,
+            parent=self,
+        )
+        dlg.sendGrblCommand.connect(self._controller.send_raw_line)
+        dlg.exec()
 
     def _on_open_surfacing_dialog(self) -> None:
         """Settings → Surface plug backing… — open the surfacing planner."""

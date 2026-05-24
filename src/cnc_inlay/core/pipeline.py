@@ -408,6 +408,26 @@ def _tool_change_park_xy_mm(
     return (park_x, park_y)
 
 
+def witness_mark_position_mm(
+    design: Design, is_plug: bool
+) -> tuple[float, float]:
+    """Witness-divot location in work-coordinate mm.
+
+    Per-side deterministic so the Recovery Wizard can recompute the same
+    coordinate without storing it. Placed 8 mm past the design's top-right
+    corner — well inside any plausible stock and outside the design (and
+    its mirrored plug) so it never collides with the actual cut.
+    """
+    margin = 8.0
+    half_w = design.width_mm / 2.0
+    half_h = design.height_mm / 2.0
+    if is_plug:
+        # Plug toolpaths live in the mirrored frame, so the witness on
+        # the plug side mirrors too — top-LEFT of the mirrored design.
+        return (-(half_w + margin), half_h + margin)
+    return (half_w + margin, half_h + margin)
+
+
 def _emit_multi_bit_side(
     bit_chains: list[tuple[Bit, list[Chain]]],
     *,
@@ -478,9 +498,13 @@ def _emit_multi_bit_side(
         bit_chain_breakdown.append((bit, chains, role, duration_s))
 
     park_xy = _tool_change_park_xy_mm(design, params, is_plug)
+    witness_xy = witness_mark_position_mm(design, is_plug) if (
+        params.witness_mark_enabled and params.witness_mark_depth_mm > 0
+    ) else None
     gcode = emit_gcode(
         sections, title=title, params=params, is_plug=is_plug,
         tool_change_park_xy_mm=park_xy,
+        witness_mark_xy_mm=witness_xy,
     )
     return Side(
         clear_preview=all_preview,
