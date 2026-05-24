@@ -1061,6 +1061,27 @@ class ControlsPanel(QWidget):
         self.skip_pocket_vbit_check.toggled.connect(self._on_param_change)
         bf.addRow(self.skip_pocket_vbit_check)
 
+        # Witness-mark divot toggle. When ON the program cuts a small
+        # recovery divot in stock waste BEFORE the main toolpath — used
+        # by the Recovery Wizard's witness tab to re-zero XYZ after a
+        # USB drop. Default ON (per v1.2.14), but the operator can
+        # disable per-project when the stock doesn't have room or when
+        # they don't want the extra cut.
+        self.witness_mark_check = QCheckBox(
+            "Cut witness-mark divot at start (for recovery re-zero)"
+        )
+        self.witness_mark_check.setChecked(True)
+        self.witness_mark_check.setToolTip(
+            "Cuts a 3 mm × 1 mm divot in stock waste before the design "
+            "as a precise physical reference for the Recovery Wizard's "
+            "witness-mark tab. Lives 5 mm past the design corner, "
+            "clamped 5 mm inside the stock edge. Disable per-project "
+            "if your stock is too tight to fit the divot or you don't "
+            "want the ~1 s of extra cut time."
+        )
+        self.witness_mark_check.toggled.connect(self._on_param_change)
+        bf.addRow(self.witness_mark_check)
+
         self.endmill_combo = QComboBox()
         self.endmill_combo.setMaximumWidth(180)
         for b in bits:
@@ -1955,6 +1976,9 @@ class ControlsPanel(QWidget):
         self.skip_pocket_vbit_check.setChecked(
             getattr(params, "skip_pocket_vbit", True)
         )
+        self.witness_mark_check.setChecked(
+            getattr(params, "witness_mark_enabled", True)
+        )
         # Per-bit speed overrides — stash any whose tab doesn't exist yet
         # (new bits will get them on the next _refresh_speeds_tabs).
         self._pending_bit_overrides = dict(params.bit_speed_overrides)
@@ -2023,6 +2047,7 @@ class ControlsPanel(QWidget):
                 name for name, cb in self._plug_roughing_checks.items() if cb.isChecked()
             ],
             skip_pocket_vbit=self.skip_pocket_vbit_check.isChecked(),
+            witness_mark_enabled=self.witness_mark_check.isChecked(),
         )
 
     def current_vbit(self) -> Bit:

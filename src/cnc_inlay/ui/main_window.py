@@ -1665,8 +1665,8 @@ class MainWindow(QMainWindow):
             and getattr(params, "witness_mark_depth_mm", 0.0) > 0
         ):
             from cnc_inlay.core.pipeline import witness_mark_position_mm
-            pocket_witness = witness_mark_position_mm(self._design, is_plug=False)
-            plug_witness = witness_mark_position_mm(self._design, is_plug=True)
+            pocket_witness = witness_mark_position_mm(self._design, params, is_plug=False)
+            plug_witness = witness_mark_position_mm(self._design, params, is_plug=True)
         from cnc_inlay.ui.recovery_dialog import RecoveryDialog
         dlg = RecoveryDialog(
             checkpoint_wco=cp_wco,
@@ -2456,6 +2456,27 @@ class MainWindow(QMainWindow):
             # successful Preview because the overlay couldn't render.
             pass
 
+        # Witness-mark markers — show the operator EXACTLY where the
+        # first cut will land before they click Run. Without this the
+        # divot-cut "jogs to upper right and plunges" reads as a
+        # runaway move. Cleared when witness is disabled.
+        try:
+            if (
+                getattr(params, "witness_mark_enabled", True)
+                and self._design is not None
+            ):
+                from cnc_inlay.core.pipeline import witness_mark_position_mm
+                wp = witness_mark_position_mm(self._design, params, is_plug=False)
+                wpl = witness_mark_position_mm(self._design, params, is_plug=True)
+                wd = float(getattr(params, "witness_mark_diameter_mm", 3.0))
+                self._pocket_canvas2d.set_witness_mark(wp, wd)
+                self._plug_canvas2d.set_witness_mark(wpl, wd)
+            else:
+                self._pocket_canvas2d.set_witness_mark(None)
+                self._plug_canvas2d.set_witness_mark(None)
+        except Exception:
+            pass
+
         # Build a recommendation message that prioritises coverage warnings,
         # since those mean the current bit will physically fail to clear regions.
         rec_lines: list[str] = []
@@ -2558,6 +2579,22 @@ class MainWindow(QMainWindow):
         else:
             for issue in adv.issues:
                 rec_lines.append(issue)
+        # Witness-mark notice — the program will move to a non-design XY
+        # and plunge before the main toolpath. Easy to read as a runaway
+        # cut if the operator hasn't been told.
+        if getattr(params, "witness_mark_enabled", True) and self._design is not None:
+            from cnc_inlay.core.pipeline import witness_mark_position_mm
+            wp = witness_mark_position_mm(self._design, params, is_plug=False)
+            wpl = witness_mark_position_mm(self._design, params, is_plug=True)
+            rec_lines.append(
+                f"📍 Witness-mark divot will cut at the START of each side, "
+                f"BEFORE the main toolpath:\n"
+                f"     • Pocket: (X {wp[0]:+.2f}, Y {wp[1]:+.2f}) mm\n"
+                f"     • Plug:   (X {wpl[0]:+.2f}, Y {wpl[1]:+.2f}) mm\n"
+                f"  Verify each spot is on your stock and clear of clamps. "
+                f"Untick \"Cut witness-mark divot at start\" in the sidebar "
+                f"to disable."
+            )
         # Plug-vs-pocket interference: if the plug is oversize anywhere
         # relative to the actual pocket cavity, it physically won't seat.
         # Prepend it to the recommendations so it's the first thing seen.

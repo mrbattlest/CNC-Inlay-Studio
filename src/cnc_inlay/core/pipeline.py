@@ -409,23 +409,45 @@ def _tool_change_park_xy_mm(
 
 
 def witness_mark_position_mm(
-    design: Design, is_plug: bool
+    design: Design, params: InlayParams, is_plug: bool
 ) -> tuple[float, float]:
     """Witness-divot location in work-coordinate mm.
 
     Per-side deterministic so the Recovery Wizard can recompute the same
-    coordinate without storing it. Placed 8 mm past the design's top-right
-    corner — well inside any plausible stock and outside the design (and
-    its mirrored plug) so it never collides with the actual cut.
+    coordinate without storing it. Placed in the stock waste area:
+    nominally 5 mm past the design's top-right corner, then clamped to
+    stay at least 5 mm inside the stock edges so the divot can never
+    plunge into clamps or run off the wood. Falls back to the
+    design-relative position when stock dimensions aren't supplied.
     """
-    margin = 8.0
+    design_margin = 5.0
+    stock_margin = 5.0
     half_w = design.width_mm / 2.0
     half_h = design.height_mm / 2.0
+
+    wx = half_w + design_margin
+    wy = half_h + design_margin
+
+    stock_w = (
+        params.plug_stock_width_mm if is_plug else params.pocket_stock_width_mm
+    )
+    stock_h = (
+        params.plug_stock_height_mm if is_plug else params.pocket_stock_height_mm
+    )
+    if stock_w > 0:
+        max_x = stock_w / 2.0 - stock_margin
+        if max_x < wx:
+            # Stock is too narrow for the nominal placement — pull the
+            # witness closer to the design corner but never inside it.
+            wx = max(half_w + 2.0, max_x)
+    if stock_h > 0:
+        max_y = stock_h / 2.0 - stock_margin
+        if max_y < wy:
+            wy = max(half_h + 2.0, max_y)
     if is_plug:
-        # Plug toolpaths live in the mirrored frame, so the witness on
-        # the plug side mirrors too — top-LEFT of the mirrored design.
-        return (-(half_w + margin), half_h + margin)
-    return (half_w + margin, half_h + margin)
+        # Plug toolpaths live in the mirrored frame.
+        wx = -wx
+    return (wx, wy)
 
 
 def _emit_multi_bit_side(
@@ -498,7 +520,7 @@ def _emit_multi_bit_side(
         bit_chain_breakdown.append((bit, chains, role, duration_s))
 
     park_xy = _tool_change_park_xy_mm(design, params, is_plug)
-    witness_xy = witness_mark_position_mm(design, is_plug) if (
+    witness_xy = witness_mark_position_mm(design, params, is_plug) if (
         params.witness_mark_enabled and params.witness_mark_depth_mm > 0
     ) else None
     gcode = emit_gcode(

@@ -245,6 +245,7 @@ class PreviewCanvas(QGraphicsView):
 
         self._machine_marker_item: QGraphicsPathItem | None = None
         self._stock_outline_item: QGraphicsPathItem | None = None
+        self._witness_marker_items: list[QGraphicsPathItem] = []
 
         # Shift-drag rectangle selection (for the "Copy area feedback"
         # workflow). _selection_anchor_scene is the press-point in scene
@@ -444,6 +445,37 @@ class PreviewCanvas(QGraphicsView):
         self._boundary_chains = chains or []
         self._redraw_layer(self._boundary_chains, self._boundary_items, BOUNDARY, 4)
 
+    def set_witness_mark(
+        self, position_mm: tuple[float, float] | None, diameter_mm: float = 3.0
+    ) -> None:
+        """Show / clear a marker for the witness-divot location. Drawn as a
+        small amber crosshair-ringed circle at the divot's centre so the
+        operator sees WHERE the first cut will land, before clicking Run."""
+        for item in self._witness_marker_items:
+            self._scene.removeItem(item)
+        self._witness_marker_items.clear()
+        if position_mm is None:
+            return
+        x, y = position_mm
+        r = max(0.4, diameter_mm / 2.0)
+        pen = QPen(QColor("#f5a623"))
+        pen.setCosmetic(True)
+        pen.setWidthF(1.6)
+        # Ring at the divot's outer edge.
+        ring = QPainterPath()
+        ring.addEllipse(QPointF(x, y), r, r)
+        ring_item = self._scene.addPath(ring, pen)
+        ring_item.setZValue(11)
+        self._witness_marker_items.append(ring_item)
+        # Crosshair tick — bigger than the divot so it's findable.
+        tick = max(2.0, r * 3.0)
+        cross = QPainterPath()
+        cross.moveTo(x - tick, y); cross.lineTo(x + tick, y)
+        cross.moveTo(x, y - tick); cross.lineTo(x, y + tick)
+        cross_item = self._scene.addPath(cross, pen)
+        cross_item.setZValue(11)
+        self._witness_marker_items.append(cross_item)
+
     def set_stock_outline(self, width_mm: float, height_mm: float) -> None:
         """Draw a dashed rectangle representing the user's actual wood. 0
         values clear it (no stock dimensions specified)."""
@@ -474,6 +506,7 @@ class PreviewCanvas(QGraphicsView):
             for item in items:
                 self._scene.removeItem(item)
             items.clear()
+        self.set_witness_mark(None)
 
     # ------------------------------------------------------------- view mode
 
