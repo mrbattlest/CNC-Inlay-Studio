@@ -92,13 +92,10 @@ class RecoveryDialog(QDialog):
         outer.addWidget(intro)
 
         self._tabs = QTabWidget()
-        self._tabs.addTab(self._build_homing_tab(), "1. Homing ($H)")
-        self._tabs.addTab(
-            self._build_witness_tab(), "2. Witness mark"
-        )
-        self._tabs.addTab(
-            self._build_feature_tab(), "3. Design feature"
-        )
+        self._tabs.addTab(self._build_switch_tab(), "1. Safety switches")
+        self._tabs.addTab(self._build_homing_tab(), "2. Homing ($H)")
+        self._tabs.addTab(self._build_witness_tab(), "3. Witness mark")
+        self._tabs.addTab(self._build_feature_tab(), "4. Design feature")
         outer.addWidget(self._tabs, 1)
 
         row = QHBoxLayout()
@@ -107,6 +104,124 @@ class RecoveryDialog(QDialog):
         close.clicked.connect(self.accept)
         row.addWidget(close)
         outer.addLayout(row)
+
+    # ------------------------------------------------------- switch tab
+    def _build_switch_tab(self) -> QWidget:
+        from cnc_inlay.presets.cnc_machines import (
+            load_safety_switch_positions, save_safety_switch_positions,
+        )
+        self._save_switch_positions = save_safety_switch_positions
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        info = QLabel(
+            "<b>For machines with hard-stop safety switches at +X, +Y, +Z."
+            "</b><br>"
+            "<span style='color:#9aa0a6'>If you always set your work zero "
+            "in the same way (same stock fixture, same origin), each "
+            "switch trips at a constant work-coord position — a "
+            "permanent physical reference. Touch one axis at a time, "
+            "click that axis's Restore button, repeat for the others. "
+            "Each restore is independent: jog away between if you like.</span>"
+        )
+        info.setTextFormat(Qt.RichText)
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        # Saved positions — editable so the operator can re-calibrate.
+        form = QFormLayout()
+        saved = load_safety_switch_positions()
+        defaults = saved if saved is not None else (0.0, 0.0, 0.0)
+
+        def _spin(val: float) -> QDoubleSpinBox:
+            sp = QDoubleSpinBox()
+            sp.setRange(-1000.0, 1000.0)
+            sp.setDecimals(3)
+            sp.setSingleStep(0.001)
+            sp.setSuffix(" mm")
+            sp.setValue(val)
+            return sp
+
+        self._sw_x = _spin(defaults[0])
+        self._sw_y = _spin(defaults[1])
+        self._sw_z = _spin(defaults[2])
+        form.addRow("+X switch work-coord:", self._sw_x)
+        form.addRow("+Y switch work-coord:", self._sw_y)
+        form.addRow("+Z switch work-coord:", self._sw_z)
+        layout.addLayout(form)
+
+        # Save-calibration row.
+        cal_row = QHBoxLayout()
+        save_btn = QPushButton("💾 Save these as calibration")
+        save_btn.setToolTip(
+            "Persist the three values above so they reload next time you "
+            "open this dialog. Re-run the calibration whenever you change "
+            "your work-zero convention."
+        )
+        save_btn.clicked.connect(self._on_save_switch_calibration)
+        cal_row.addWidget(save_btn)
+        cal_row.addStretch(1)
+        if saved is None:
+            cal_row.addWidget(QLabel(
+                "<span style='color:#f5a623'>⚠ no calibration saved yet — "
+                "measure once on a known-good zero, then Save.</span>"
+            ))
+        layout.addLayout(cal_row)
+
+        layout.addStretch(1)
+
+        # Per-axis Restore buttons. Each is its own G10 L20 send so the
+        # operator can do one axis at a time and re-verify position
+        # between steps without committing to the full sequence.
+        btn_row = QHBoxLayout()
+        for axis, getter, label in (
+            ("X", lambda: self._sw_x.value(), "▶ Restore X from +X switch"),
+            ("Y", lambda: self._sw_y.value(), "▶ Restore Y from +Y switch"),
+            ("Z", lambda: self._sw_z.value(), "▶ Restore Z from +Z switch"),
+        ):
+            b = QPushButton(label)
+            b.setStyleSheet(
+                "QPushButton { background:#f5a623; color:#15171b; "
+                "font-weight:700; padding:6px 12px; }"
+            )
+            b.clicked.connect(
+                lambda _checked, ax=axis, g=getter: self._on_restore_switch_axis(ax, g())
+            )
+            btn_row.addWidget(b)
+        layout.addLayout(btn_row)
+
+        hint = QLabel(
+            "<span style='color:#9aa0a6'>Workflow: jog +X until the switch "
+            "trips (or until you can confirm the bit is at the very end of "
+            "X travel). Click <b>Restore X</b>. Jog away. Repeat for Y, "
+            "then for Z. After all three, your work zero is back where it "
+            "was — verify by jogging to (0, 0, 0) and confirming the bit "
+            "is at the design origin.</span>"
+        )
+        hint.setTextFormat(Qt.RichText)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        return w
+
+    def _on_save_switch_calibration(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        self._save_switch_positions(
+            float(self._sw_x.value()),
+            float(self._sw_y.value()),
+            float(self._sw_z.value()),
+        )
+        QMessageBox.information(
+            self, "Calibration saved",
+            "Safety-switch positions saved. They'll reload next time you "
+            "open this wizard.",
+        )
+
+    def _on_restore_switch_axis(self, axis: str, value: float) -> None:
+        """Send the per-axis G10 L20 that pins the bit's current WPos
+        on this axis to the saved switch value."""
+        self.sendGrblCommand.emit(f"G21 G10 L20 P1 {axis}{value:.4f}")
 
     # -------------------------------------------------------- homing tab
     def _build_homing_tab(self) -> QWidget:

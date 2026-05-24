@@ -95,3 +95,39 @@ def set_active_machine(key: str, custom: dict | None = None) -> None:
     if key == "custom" and custom is not None:
         settings["cnc_machine_custom"] = custom
     save_settings(settings)
+
+
+# ---------------------------------------------------- safety-switch calibration
+#
+# The Lunyee (and most hobbyist CNCs) has hard-stop safety switches at the
+# +X / +Y / +Z extremes of travel. When the user sets their work zero in a
+# repeatable way (e.g. always at the centre of a stock fixture, or at a
+# bed-corner reference), the work-coord position at which each switch
+# trips is constant for that setup — a permanent physical reference.
+# Stored as work-coord mm (NOT machine-coord), independent of GRBL homing.
+# The Recovery Wizard's "Switch touch-off" tab uses these to restore each
+# axis independently: jog to the switch → set work-coord to the saved
+# value via G10 L20 P1.
+
+
+def load_safety_switch_positions() -> tuple[float, float, float] | None:
+    """Return the saved (x, y, z) work-coord positions of the +X / +Y / +Z
+    safety switches, or ``None`` if they haven't been calibrated."""
+    settings = load_settings()
+    sw = settings.get("safety_switches_xyz_mm")
+    if not isinstance(sw, dict):
+        return None
+    try:
+        return (float(sw["x"]), float(sw["y"]), float(sw["z"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def save_safety_switch_positions(x: float, y: float, z: float) -> None:
+    """Persist the work-coord positions of the +X / +Y / +Z safety
+    switches. Called from the Recovery Wizard's switch-calibration UI."""
+    settings = load_settings()
+    settings["safety_switches_xyz_mm"] = {
+        "x": float(x), "y": float(y), "z": float(z),
+    }
+    save_settings(settings)

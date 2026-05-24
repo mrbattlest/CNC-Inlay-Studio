@@ -1,33 +1,21 @@
-- **Witness-mark divot at the start of every job.** Each program now
-  cuts a small 3 mm-wide, 1 mm-deep divot in stock waste BEFORE the
-  design — at a deterministic location (8 mm past the design's
-  top-right corner). The divot acts as a precise physical re-zero
-  reference: after a USB drop you can jog the bit-tip into the
-  divot and the Recovery Wizard re-applies the original work-zero by
-  setting the current position to the divot's known XYZ. The cut is
-  ~1 second of overhead, uses the first bit (no tool change), and
-  lives entirely in waste so it never interferes with the design.
-  Enabled by default. Disable per-project by clearing
-  ``witness_mark_enabled`` in the project file if needed.
+- **Safety-switch touch-off recovery.** The Recovery Wizard now has a
+  first tab ("Safety switches") built for hobbyist CNCs with hard-stop
+  switches at the +X / +Y / +Z extremes of travel (Lunyee, Sainsmart,
+  etc.).
 
-- **Settings → Recover work zero…** — a new wizard with three
-  recovery paths in tabs:
+  If you always set your work zero in the same way (same stock fixture,
+  same origin convention), each switch trips at a constant work-coord
+  position — a permanent physical reference, independent of GRBL
+  homing. Calibrate once: when work zero is correct, jog each axis to
+  its switch, note the WPos, type those three numbers into the wizard,
+  click Save.
 
-  1. **Homing + restore WCO** — for machines with limit switches.
-     Soft-reset → unlock → ``$H`` → re-apply the WCO that the
-     checkpoint saved during the last run. Best accuracy. The
-     checkpoint now saves the **work-coordinate offset** on every
-     status tick (alongside WPos), so this restore is exact.
+  After a USB drop or power blip: open the wizard, jog +X until the
+  switch trips, click **Restore X from +X switch** → the app sends
+  ``G21 G10 L20 P1 X<saved_x>``, pinning the current bit position to
+  the saved switch coord. Jog away. Repeat for Y, then Z. Each axis is
+  restored independently — no need to commit to a full sequence at
+  once. After all three, your work zero is exactly where it was.
 
-  2. **Witness divot** — jog the bit-tip into the divot the program
-     cut, pick which side you were running (Pocket / Plug), click
-     Restore. Wizard sends ``G21 G10 L20 P1 X<wx> Y<wy> Z<-depth>``.
-     Sub-0.1 mm with care, no hardware required.
-
-  3. **Design feature** — for when there's no divot and no limit
-     switches. Type the design coordinates of any visible feature on
-     the partly-cut work (corner, centre, intersection), jog the
-     bit-tip exactly onto that physical spot, click Restore. Wizard
-     applies the matching G10 L20 line so the current bit-tip
-     position maps to those design coords. ~0.1–0.2 mm depending on
-     how cleanly you can pin the feature visually.
+  No `$H` homing required, no limit switches in GRBL config, no
+  hardware install — just the switches the Lunyee already ships with.
