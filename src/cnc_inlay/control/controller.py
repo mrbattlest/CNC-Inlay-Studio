@@ -123,6 +123,14 @@ class MachineWorker(QObject):
         # can offer to restore work-zero on next reconnect after a
         # silence event.
         self._last_wpos: Position | None = None
+        # streamProgress emit throttle. The stream timer fires every
+        # 15 ms (66 Hz) — emitting at that rate floods the cross-thread
+        # signal queue and the UI falls progressively behind on long
+        # cuts. Cap emits at ~12 Hz / every 4 acked lines, whichever
+        # comes first. Plenty smooth for the scrub bar; saves the main
+        # thread thousands of redundant repaints per minute.
+        self._last_emit_monotonic: float = 0.0
+        self._last_emitted_cursor: int = -1
 
     # ---------------------------------------------------------------- slots
 
@@ -242,6 +250,10 @@ class MachineWorker(QObject):
         self._silence_timer.setInterval(1000)
         self._silence_timer.timeout.connect(self._check_grbl_silence)
         self._silence_timer.start()
+        # Reset progress-emit throttle so the very first tick of the new
+        # stream emits immediately (instead of waiting up to 80 ms).
+        self._last_emit_monotonic = 0.0
+        self._last_emitted_cursor = -1
         self.streamStarted.emit(self._streamer.total)
 
     @Slot()
@@ -446,8 +458,24 @@ class MachineWorker(QObject):
                 f"for {self._pending_tool_change_bit} "
                 f"(GRBL stays Idle so jog + Set Z=0 work)"
             )
-        self.streamProgress.emit(self._streamer.cursor, self._streamer.total)
-        if self._streamer.is_done:
+        # Throttled cross-thread emit. Emit whenever (a) at least 80 ms
+        # has elapsed since the last emit, OR (b) the cursor jumped by
+        # ≥4 lines (so a sparse-tick burst of cuts still updates), OR
+        # (c) we just finished. Anything more aggressive floods the
+        # main-thread queue on long cuts.
+        import time as _time
+        now_mono = _time.monotonic()
+        cur = self._streamer.cursor
+        done = self._streamer.is_done
+        if (
+            done
+            or (now_mono - self._last_emit_monotonic) >= 0.08
+            or (cur - self._last_emitted_cursor) >= 4
+        ):
+            self.streamProgress.emit(cur, self._streamer.total)
+            self._last_emit_monotonic = now_mono
+            self._last_emitted_cursor = cur
+        if done:
             if self._stream_timer is not None:
                 self._stream_timer.stop()
                 self._stream_timer = None

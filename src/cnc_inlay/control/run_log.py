@@ -39,6 +39,16 @@ from pathlib import Path
 _log_lock = threading.Lock()
 _log_file = None
 _log_path: Path | None = None
+_flush_thread: threading.Thread | None = None
+_flush_stop = threading.Event()
+# How often the background thread flushes the OS-buffered write cache to
+# disk. 2 s gives us crash-safety down to "the most recent 2 s of log
+# may be missing" while letting Python's stdio coalesce thousands of
+# small writes into a handful of disk syscalls — the previous
+# ``buffering=1`` mode fsync'd on every line and stalled the worker
+# thread during dense streaming, which then backed up the
+# streamProgress signal queue to the main thread.
+_FLUSH_INTERVAL_S = 2.0
 
 
 def _log_dir() -> Path:
@@ -62,23 +72,53 @@ def open_session() -> Path | None:
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     path = _log_dir() / f"run-{stamp}.log"
     try:
-        # Line-buffered so a crash mid-cut doesn't lose the most recent
-        # actions — the worker writes constantly, so the buffer-flush
-        # cost is dwarfed by the serial I/O it's logging anyway.
-        f = open(path, "w", encoding="utf-8", buffering=1)
+        # Block-buffered (8 KB). Combined with the background flush
+        # thread below, this trades crash-safety down to the last ~2 s
+        # of log for a massive throughput win — line-buffering fsync'd
+        # on every G-code line + status report and stalled the worker
+        # during dense streaming, which read back to the UI as
+        # progressive lag during a long cut.
+        f = open(path, "w", encoding="utf-8", buffering=8192)
     except Exception:
         return None
     with _log_lock:
         _log_file = f
         _log_path = path
+    _start_flush_thread()
     log_event(f"session opened — {path}")
     return path
+
+
+def _start_flush_thread() -> None:
+    """Spawn a daemon thread that flushes the log every few seconds.
+    Daemonised so it can't block app shutdown."""
+    global _flush_thread
+    if _flush_thread is not None and _flush_thread.is_alive():
+        return
+    _flush_stop.clear()
+
+    def _loop() -> None:
+        while not _flush_stop.wait(_FLUSH_INTERVAL_S):
+            with _log_lock:
+                f = _log_file
+                if f is None:
+                    continue
+                try:
+                    f.flush()
+                except Exception:
+                    pass
+
+    t = threading.Thread(target=_loop, name="run-log-flush", daemon=True)
+    _flush_thread = t
+    t.start()
 
 
 def close_session() -> None:
     """Flush and close the current log. Safe to call when nothing's
     open. Called on Disconnect and at app shutdown."""
     global _log_file, _log_path
+    # Tell the flush daemon to exit first so it doesn't race the close.
+    _flush_stop.set()
     with _log_lock:
         f = _log_file
         _log_file = None

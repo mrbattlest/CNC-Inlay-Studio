@@ -1,25 +1,25 @@
-- **Witness-mark divot is now clearly announced + safely placed.**
-  v1.2.14 shipped it default-on but failed to communicate it: the
-  Two-Dachshunds pocket sent the bit to an "upper right" spot you
-  weren't expecting and started to plunge — easy to read as a runaway
-  cut, which it wasn't. Three fixes:
+- **Fixed progressive UI lag during long cuts.** Two compounding
+  issues were burying the main thread under work:
 
-  - **Sidebar checkbox** (under the V-bit toggle): *"Cut witness-mark
-    divot at start (for recovery re-zero)"*. Default ON, but visible
-    and one click to disable per-project.
-  - **Stock-aware placement.** The divot is now nominally placed 5 mm
-    past the design's top-right corner AND clamped to stay at least
-    5 mm inside the stock edge. On the Two-Dachshunds project this
-    moves the divot from (108, 44.5) — 0.5 mm from the stock edge,
-    nearly off the wood — to a safe (105, 40). When the stock is too
-    small for the ideal placement the divot pulls in further (but
-    never inside the design).
-  - **Visible on the canvas.** The 2 D Pocket and Plug previews now
-    draw an amber crosshair + ring at the divot's exact location, so
-    you can SEE where the first cut will land before clicking Run.
-    The recommendation panel also lists the per-side coordinates
-    explicitly and tells you which checkbox to untick to disable.
+  1. The per-Connect-session run log was opened with
+     ``buffering=1`` — line-buffered, so every G-code line and every
+     GRBL status report fsync'd to disk. During dense streaming the
+     worker was doing hundreds of fsync calls per second, which
+     stalled the worker thread, which backed up the cross-thread
+     ``streamProgress`` signal queue, which is what you felt as
+     "increasingly unresponsive UI". The log is now block-buffered
+     (8 KB) with a daemon thread that flushes every 2 seconds —
+     **150× faster** in a benchmark (756K writes/sec vs ~5K). Crash
+     safety drops from "the last line" to "the last ~2 s of log".
 
-  Plus the existing Recovery Wizard → Witness tab keeps working — it
-  now reads the same smart-placement formula so the coordinates the
-  wizard shows always match the divot that was actually cut.
+  2. ``streamProgress`` was emitted on every ``_stream_tick`` —
+     66 Hz, every 15 ms. The main-thread queue couldn't fall behind
+     forever without growing. Throttled to ≤ 12 emits/sec (every
+     80 ms) OR whenever the cursor jumps ≥ 4 lines, whichever comes
+     first. The scrub bar is still perfectly smooth at this rate;
+     the queue stops backing up.
+
+  No more "the app is fine for a minute then gets sluggish then
+  freezes" pattern on long cuts. If you still see UI lag during a
+  cut, shift-drag the canvas and send me a snippet — there might be
+  a third culprit I haven't found.
