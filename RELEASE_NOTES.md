@@ -1,25 +1,29 @@
-- **Fixed progressive UI lag during long cuts.** Two compounding
-  issues were burying the main thread under work:
+- **Long-cut responsiveness, round two.** v1.2.17 fixed the run-log
+  fsync flood and throttled the streamProgress signal. There was a
+  third culprit hiding behind those: the 3D bit-position cone was
+  creating **32 fresh OpenGL line items** on the Canvas3D every
+  status report (5 Hz). Each item added/removed triggers a full
+  paintGL of the scene, and a multi-bit dachshund 3D scene has
+  thousands of toolpath line items — a single repaint isn't cheap.
+  Multiply by 32 items × 5 Hz × hours of cutting and the main thread
+  drowns in scene-graph churn.
 
-  1. The per-Connect-session run log was opened with
-     ``buffering=1`` — line-buffered, so every G-code line and every
-     GRBL status report fsync'd to disk. During dense streaming the
-     worker was doing hundreds of fsync calls per second, which
-     stalled the worker thread, which backed up the cross-thread
-     ``streamProgress`` signal queue, which is what you felt as
-     "increasingly unresponsive UI". The log is now block-buffered
-     (8 KB) with a daemon thread that flushes every 2 seconds —
-     **150× faster** in a benchmark (756K writes/sec vs ~5K). Crash
-     safety drops from "the last line" to "the last ~2 s of log".
+  Two fixes:
 
-  2. ``streamProgress`` was emitted on every ``_stream_tick`` —
-     66 Hz, every 15 ms. The main-thread queue couldn't fall behind
-     forever without growing. Throttled to ≤ 12 emits/sec (every
-     80 ms) OR whenever the cursor jumps ≥ 4 lines, whichever comes
-     first. The scrub bar is still perfectly smooth at this rate;
-     the queue stops backing up.
+  1. **One cached cone item, updated in place.** The 32 segments are
+     now packed into a single ``GLLinePlotItem`` (``mode='lines'``)
+     created once, then ``setData(pos=…)``'d on every status report.
+     Benchmark: 100 cone updates dropped from churning 3200 items to
+     **1.27 ms total** — 78K updates/sec, no item creation, no
+     scene-graph thrash.
 
-  No more "the app is fine for a minute then gets sluggish then
-  freezes" pattern on long cuts. If you still see UI lag during a
-  cut, shift-drag the canvas and send me a snippet — there might be
-  a third culprit I haven't found.
+  2. **Skip the hidden canvas.** The 2D and 3D views of each side
+     live in a QStackedWidget so only one is visible at a time. The
+     other was getting status updates anyway — wasted work,
+     especially the expensive 3D one. Now ``_on_machine_status_changed``
+     only pushes to the canvas the operator is actually looking at;
+     when they toggle 2D/3D, the next status report (≤200 ms later)
+     refreshes the newly-visible view.
+
+  If the app still gets sluggish during a long cut after this, please
+  shift-drag the canvas and send me a snippet — I'll dig further.

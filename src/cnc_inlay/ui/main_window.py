@@ -3925,9 +3925,21 @@ class MainWindow(QMainWindow):
         # current_endmill() returns the FINISHING flat endmill, which
         # made the cone appear visually wrong-sized during V-bit cuts.
         bit_d = self._current_streaming_bit_diameter_mm()
+
+        def _push_visible(canvas2d, canvas3d) -> None:
+            """Only update the canvas the operator is currently looking
+            at — the 2D and 3D views are in a QStackedWidget so the
+            hidden one is wasted work. The 3D cone in particular is
+            expensive (full GL scene repaint), and at 5 Hz status × hours
+            of cut that adds up. The hidden canvas refreshes on next
+            status report after the operator toggles."""
+            if canvas2d.isVisible():
+                canvas2d.set_machine_position(wpos.x, wpos.y, wpos.z, bit_d)
+            if canvas3d.isVisible():
+                canvas3d.set_machine_position(wpos.x, wpos.y, wpos.z, bit_d)
+
         if self._streaming_side == "pocket":
-            self._pocket_canvas2d.set_machine_position(wpos.x, wpos.y, wpos.z, bit_d)
-            self._pocket_canvas3d.set_machine_position(wpos.x, wpos.y, wpos.z, bit_d)
+            _push_visible(self._pocket_canvas2d, self._pocket_canvas3d)
         elif self._streaming_side == "plug":
             # The plug G-code already carries mirrored X coordinates (plug
             # chains are computed from the X-flipped design), and the plug
@@ -3936,10 +3948,9 @@ class MainWindow(QMainWindow):
             # G-code it's running — already matches the canvas X. Earlier
             # versions negated X here, which made the indicator appear
             # mirrored relative to the actual cut. The simulator
-            # (_on_sim_position below) does no mirror either, for the same
-            # reason — kept consistent here.
-            self._plug_canvas2d.set_machine_position(wpos.x, wpos.y, wpos.z, bit_d)
-            self._plug_canvas3d.set_machine_position(wpos.x, wpos.y, wpos.z, bit_d)
+            # (_on_sim_position below) does no mirror either, for the
+            # same reason — kept consistent here.
+            _push_visible(self._plug_canvas2d, self._plug_canvas3d)
         elif self._streaming_side == "surfacing":
             # Surfacing uses whatever bit the user picked in the
             # Surface plug backing dialog — it's stored on the canvas

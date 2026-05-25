@@ -718,30 +718,50 @@ class Canvas3D(gl.GLViewWidget):
         the actual endmill. Z is lifted by stock thickness so the cone
         descends INTO the wood block from above instead of from below
         the bed grid.
+
+        Reuses one persistent ``GLLinePlotItem`` (mode='lines') for all 32
+        cone segments and updates its ``pos`` in place. The earlier
+        implementation created + destroyed 32 GL items on every status
+        report (5 Hz) — at long-cut scale that's ~30 K item churns per
+        hour per canvas, each triggering a full paintGL of the scene.
         """
-        self._clear(self._machine_marker_items)
         z = z + self._z_lift()
         radius = max(0.6, bit_diameter_mm / 2.0)
         cone_height = max(8.0, radius * 12.0)
         base_z = z + cone_height
         n_segments = 16
-        base_points = []
-        for i in range(n_segments):
-            angle = 2 * np.pi * i / n_segments
-            base_points.append(
-                (x + radius * np.cos(angle), y + radius * np.sin(angle), base_z)
-            )
-        # Slant lines: tip → each base point.
         tip = (x, y, z)
-        for bp in base_points:
-            pts = np.array([tip, bp], dtype=np.float32)
-            self._add_line(pts, _MACHINE_BIT_RGBA, 2.5, self._machine_marker_items)
-        # Base ring.
-        for i in range(n_segments):
-            a = base_points[i]
-            b = base_points[(i + 1) % n_segments]
-            pts = np.array([a, b], dtype=np.float32)
-            self._add_line(pts, _MACHINE_BIT_RGBA, 2.5, self._machine_marker_items)
+        # Build a single (2 × N) point array: N slant pairs + N base-ring
+        # pairs, rendered as disjoint segments by mode='lines'.
+        angles = np.linspace(0.0, 2 * np.pi, n_segments, endpoint=False)
+        cos_t = np.cos(angles); sin_t = np.sin(angles)
+        base = np.column_stack([
+            x + radius * cos_t,
+            y + radius * sin_t,
+            np.full_like(cos_t, base_z),
+        ]).astype(np.float32)
+        # Slant pairs: [tip, base[i], tip, base[i], …]
+        slant_pts = np.empty((2 * n_segments, 3), dtype=np.float32)
+        slant_pts[0::2] = tip
+        slant_pts[1::2] = base
+        # Ring pairs: [base[0], base[1], base[1], base[2], …, base[N-1], base[0]]
+        ring_pts = np.empty((2 * n_segments, 3), dtype=np.float32)
+        ring_pts[0::2] = base
+        ring_pts[1::2] = np.roll(base, -1, axis=0)
+        pts = np.concatenate([slant_pts, ring_pts], axis=0)
+
+        if not self._machine_marker_items:
+            # First call — create the cached item once and remember it.
+            item = gl.GLLinePlotItem(
+                pos=pts, color=_MACHINE_BIT_RGBA, width=2.5,
+                antialias=True, mode="lines",
+            )
+            self.addItem(item)
+            self._machine_marker_items.append(item)
+        else:
+            # Reuse — just push the new vertex array. No add/remove, no
+            # scene-graph churn, no per-call paintGL cascade.
+            self._machine_marker_items[0].setData(pos=pts)
 
     def clear_machine_position(self) -> None:
         self._clear(self._machine_marker_items)
