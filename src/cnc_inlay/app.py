@@ -51,9 +51,65 @@ def main() -> int:
     app.setApplicationName("CNC Inlay Studio")
     app.setOrganizationName("CNC Inlay Studio")
     apply_theme(app)
-    window = MainWindow()
+    # Trap any unhandled exception during MainWindow construction. If
+    # the constructor raises (e.g. a corrupted project file from the
+    # last session), the exception used to propagate through
+    # raise SystemExit → Py_Exit → atexit → PySide destroys QObjects,
+    # and the still-running worker QThread tripped Qt's
+    # "Destroyed while thread is still running" fatal abort. The whole
+    # process crashed with SIGABRT before the user could see anything.
+    # Now we log to stderr, write a crash file the user can share, and
+    # show a one-shot error dialog so the next launch starts clean.
+    try:
+        window = MainWindow()
+    except Exception as exc:
+        return _report_startup_failure(app, exc)
     window.show()
-    return app.exec()
+    try:
+        return app.exec()
+    except Exception as exc:
+        return _report_startup_failure(app, exc)
+
+
+def _report_startup_failure(app, exc: BaseException) -> int:
+    """Surface a startup-time exception to the user + a crash-log file
+    instead of letting Python's exit cascade SIGABRT the process."""
+    import traceback
+    from datetime import datetime
+    tb_text = "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__)
+    )
+    sys.stderr.write("CNC Inlay Studio failed to start:\n" + tb_text)
+    # Write a one-line-per-launch crash log the user can paste in a
+    # bug report. Lives next to the run logs so it's easy to find.
+    try:
+        from pathlib import Path
+        log_dir = Path.home() / "Library" / "Logs" / "CNC Inlay Studio"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        (log_dir / f"startup-crash-{stamp}.log").write_text(tb_text)
+    except Exception:
+        pass
+    try:
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(
+            None,
+            "CNC Inlay Studio couldn't start",
+            "<b>The app hit an error while starting up.</b><br><br>"
+            "A crash log was saved to "
+            "<code>~/Library/Logs/CNC Inlay Studio/</code>. Quit and "
+            "relaunch — if it keeps happening, share the crash log "
+            "with the developer.<br><br>"
+            f"<pre style='font-size:10px'>{tb_text[-800:]}</pre>"
+        )
+    except Exception:
+        pass
+    # Drop reference to the QApplication so any controller / worker
+    # that was constructed before the failure has its atexit shutdown
+    # called (closing the serial port + stopping the QThread) BEFORE
+    # the interpreter starts tearing down PySide.
+    app.processEvents()
+    return 1
 
 
 if __name__ == "__main__":

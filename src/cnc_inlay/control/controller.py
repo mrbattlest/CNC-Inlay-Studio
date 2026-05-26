@@ -806,6 +806,32 @@ class MachineController(QObject):
         # left to take it anyway).
         if MachineController._active_connection is self:
             MachineController._active_connection = None
+        # Synchronously close the serial port FIRST. The worker thread
+        # spends most of its life blocked inside ``serial.read()``; while
+        # it's there, queued slots like ``_close_requested → close_port``
+        # never get dispatched because the event loop can't run. Closing
+        # the OS file descriptor from this (main) thread is what actually
+        # unblocks the read so the worker can return from its slot, the
+        # event loop drains, and ``_thread.quit()`` can take effect.
+        # Without this the QThread destructor at Python finalization
+        # would SIGABRT with "QThread: Destroyed while thread is still
+        # running" — exactly the crash users hit when the app shut down
+        # via an unhandled exception path.
+        try:
+            worker_serial = getattr(self._worker, "_serial", None)
+            if worker_serial is not None:
+                try:
+                    worker_serial.close()
+                except Exception:
+                    pass
+                try:
+                    self._worker._serial = None
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # Also fire the close request through the normal channel so any
+        # remaining ack/disconnect housekeeping runs on the worker.
         try:
             self._close_requested.emit()
         except Exception:
@@ -813,10 +839,10 @@ class MachineController(QObject):
         try:
             self._thread.quit()
             if not self._thread.wait(2000):
-                # Thread refused to quit (worker stuck in a blocking call,
-                # serial read, etc.). Forcibly terminate so Qt doesn't abort
-                # the whole process when the QThread destructor runs at
-                # interpreter finalization.
+                # Thread STILL refused to quit (rare — only if the
+                # worker is stuck in pure-Python compute, not I/O).
+                # Forcibly terminate so Qt doesn't abort the whole
+                # process when the QThread destructor runs.
                 self._thread.terminate()
                 self._thread.wait(1000)
         except Exception:
