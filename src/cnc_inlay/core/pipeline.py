@@ -1228,6 +1228,42 @@ def _smallest_bit_diameter_mm(
     return min(diameters)
 
 
+def _polygon_vertex_count(geom) -> int:
+    """Total vertex count across all rings of a (Multi)Polygon."""
+    try:
+        polys = list(geom.geoms) if geom.geom_type.startswith("Multi") else [geom]
+        return sum(
+            len(p.exterior.coords) + sum(len(r.coords) for r in p.interiors)
+            for p in polys
+        )
+    except Exception:
+        return 0
+
+
+def _auto_simplify_design(
+    centered: Polygon | MultiPolygon,
+    *,
+    threshold: int = 5000,
+    tolerance_mm: float = 0.05,
+) -> Polygon | MultiPolygon:
+    """Collapse near-colinear micro-segments when the polygon's vertex
+    count crosses ``threshold``. No-op for designs already cleaner than
+    that — typical hand-drawn / lightly-traced SVGs stay untouched."""
+    n = _polygon_vertex_count(centered)
+    if n <= threshold:
+        return centered
+    try:
+        simplified = centered.simplify(tolerance_mm, preserve_topology=True)
+        # buffer(0) heals any micro self-intersections the simplify
+        # introduces, which shapely's offset routines hate.
+        simplified = simplified.buffer(0)
+        if simplified.is_empty:
+            return centered
+        return simplified
+    except Exception:
+        return centered
+
+
 def _pocket_swept_union(
     pocket_side: "Side", params: InlayParams
 ) -> Polygon | MultiPolygon | None:
@@ -1437,6 +1473,17 @@ def run_pipeline(
     _report(1, "Centring design…")
     title = f"CNC Inlay Studio - {job.design.basename}"
     centered = _center_polygon(job.design.polygon)
+    # Auto-simplify heavily-vectorised SVGs. A raster-traced logo can
+    # produce a polygon with TENS OF THOUSANDS of micro-segment
+    # vertices along each curve. Every shapely buffer / offset op the
+    # rest-machining loop runs is roughly O(vertex_count), and we run
+    # dozens of those per bit × multiple bits — so a 27 K-vertex design
+    # makes the 1.5 mm bit's offset-rings phase appear to "hang" at
+    # ~30 %. The simplification tolerance (0.05 mm = 1/4 of the
+    # smallest bit-radius likely in use) is well below anything a
+    # finishing cut would resolve, so visual fidelity is preserved —
+    # just shorter coordinate lists.
+    centered = _auto_simplify_design(centered)
 
     _report(2, "Generating pocket toolpaths…")
     pocket = _generate_pocket_side(
