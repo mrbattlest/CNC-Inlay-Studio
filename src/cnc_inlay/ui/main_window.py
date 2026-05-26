@@ -205,18 +205,18 @@ def _compute_cache_signature(
     only restored when this hash matches the current state — any edit to
     geometry, params, materials, bit selection, or speeds invalidates it.
 
-    The app version is also folded into the hash so a pipeline bugfix
-    (e.g. v1.1.12's plug-cut connector validation) auto-invalidates any
-    cache that was produced by an earlier, buggier version. Without this,
-    a user who never clicks Preview after updating could keep streaming
-    the cached old G-code and never benefit from the fix.
+    The app version is deliberately NOT in this hash. Earlier builds did
+    fold the version in so a pipeline bugfix would auto-invalidate stale
+    caches, but with the recent release cadence (a dozen versions in a
+    week) it forced every user to re-Preview every project on every
+    update — exactly the friction the cache exists to avoid. The user
+    can click Preview when they actually want fresh chains; until then
+    the cached chains paint the canvases instantly.
     """
     import hashlib
     import json as _json
-    import cnc_inlay
 
     h = hashlib.sha256()
-    h.update(cnc_inlay.__version__.encode())
     if design is not None and design.polygon is not None:
         try:
             h.update(design.polygon.wkb)
@@ -268,6 +268,11 @@ class MainWindow(QMainWindow):
         self._materials = load_materials()
         self._design: Design | None = None
         self._result: PipelineResult | None = None
+        # True iff ``_result`` came from a project cache whose signature
+        # didn't match the current params + design. The Run-on-Machine
+        # path confirms before streaming a stale cache; Preview resets
+        # the flag.
+        self._result_stale: bool = False
         # In-memory copy of the current design's SVG markup. Always populated
         # whenever a design is loaded — from file, from a project's embedded
         # svg_content, or from the AI generator. Used by save_project so the
@@ -1219,22 +1224,33 @@ class MainWindow(QMainWindow):
             return
         self._is_dirty = True
 
-    def _maybe_restore_cached_result(self, project: ProjectFile) -> bool:
-        """If ``project`` has a cached pipeline result whose signature still
-        matches the current params + design, install it as ``self._result``
-        and paint the canvases — skipping the slow run_pipeline call.
+    def _maybe_restore_cached_result(self, project: ProjectFile) -> str:
+        """Restore ``project``'s cached pipeline result if there is one.
 
-        Returns True iff the cache was restored. False means the caller
-        should let the user run Preview Toolpaths to compute fresh.
+        Returns:
+          * ``"fresh"`` — cache restored and its signature matches the
+            current params + design.
+          * ``"stale"`` — cache restored but the signature didn't match.
+            The on-disk chains paint the canvases instantly (so the
+            project opens with toolpaths visible), but they may not
+            reflect the current params. The Run-on-Machine path
+            confirms before streaming a stale cache.
+          * ``"none"`` — no cache to restore (caller should prompt the
+            operator to run Preview).
         """
-        if project.cached_result is None or project.cache_signature is None:
-            return False
+        if project.cached_result is None:
+            self._result_stale = False
+            return "none"
         if self._design is None:
-            return False
+            return "none"
         params = self._controls.current_params()
         pocket_mat = self._controls.current_pocket_material()
         plug_mat = self._controls.current_plug_material()
         endmill = self._controls.current_endmill()
+        try:
+            result = _deserialise_pipeline_result(project.cached_result, self._bits)
+        except Exception:
+            return "none"
         live_sig = _compute_cache_signature(
             design=self._design,
             params=params,
@@ -1243,15 +1259,13 @@ class MainWindow(QMainWindow):
             endmill=endmill,
             bit_library=self._bits,
         )
-        if live_sig != project.cache_signature:
-            return False
-        try:
-            result = _deserialise_pipeline_result(project.cached_result, self._bits)
-        except Exception:
-            return False
-        # Hand the cached result through the same path the live pipeline uses.
+        is_fresh = (live_sig == project.cache_signature)
+        # Hand the cached result through the same path the live pipeline
+        # uses, regardless of freshness. The operator gets toolpaths on
+        # screen instantly; staleness is just a notice.
         self._on_preview_done(result, params, endmill, pocket_mat, plug_mat)
-        return True
+        self._result_stale = not is_fresh
+        return "fresh" if is_fresh else "stale"
 
     def _maybe_reopen_after_update(self) -> None:
         """If the previous launch was triggered by the auto-installer, the
@@ -1457,7 +1471,8 @@ class MainWindow(QMainWindow):
             # signature still matches the loaded params + design. This may
             # reset the 3D camera as a side effect of _on_preview_done, so
             # we apply the saved view orientation AFTER, last-write-wins.
-            cache_restored = self._maybe_restore_cached_result(project)
+            cache_state = self._maybe_restore_cached_result(project)
+            cache_restored = cache_state in ("fresh", "stale")
 
             # Now apply the saved 3D camera angle if the project file has
             # one (v7+); otherwise fall through to the default orientation.
@@ -1468,35 +1483,20 @@ class MainWindow(QMainWindow):
                 for canvas in self._all_3d_canvases():
                     canvas.reset_view()
 
-            if cache_restored:
+            if cache_state == "fresh":
                 self._set_status(
                     f"Loaded project {source_path.name} (cached toolpaths)"
                 )
-            elif project.cached_result is not None:
-                # Had a cache but it didn't match — most likely the app was
-                # updated since save (v1.1.13+ folds app version into the
-                # signature so a pipeline bugfix auto-invalidates earlier
-                # caches). Tell the user to recompute before running, OTHERWISE
-                # they'd hit the empty-result guard on Run which is less
-                # obvious about what to do next.
+            elif cache_state == "stale":
+                # Cache restored anyway so the canvases aren't blank, but
+                # the params or design no longer matches what was hashed
+                # at save time. Non-blocking notice in the status bar;
+                # Run-on-Machine will reconfirm before streaming. No
+                # modal — the app's release cadence used to pop one on
+                # every update, which was the real friction.
                 self._set_status(
-                    f"Loaded {source_path.name} — click Preview Toolpaths "
-                    "to recompute (cached chains were invalidated by an app "
-                    "update or parameter change)."
-                )
-                QMessageBox.information(
-                    self,
-                    "Toolpaths need to be recomputed",
-                    "<b>This project's cached toolpaths are out of date.</b>"
-                    "<br><br>"
-                    "Most often this happens because the app was updated and "
-                    "the pipeline now produces different (usually safer) "
-                    "G-code, OR a parameter changed since the project was "
-                    "last saved."
-                    "<br><br>"
-                    "<b>Click Preview Toolpaths</b> before clicking Run on "
-                    "Machine — running directly would either fail or stream "
-                    "the stale paths."
+                    f"Loaded {source_path.name} (cached toolpaths shown — "
+                    f"click Preview Toolpaths to refresh if anything has changed)"
                 )
             else:
                 self._set_status(f"Loaded project {source_path.name}")
@@ -2351,6 +2351,9 @@ class MainWindow(QMainWindow):
         gc.collect()
 
         self._result = result
+        # Fresh pipeline output → clear any "loaded-from-stale-cache" mark.
+        # The cache-restore path sets it back to True if needed.
+        self._result_stale = False
         stock_depth = params.pocket_depth_mm + params.glue_gap_mm
         for c in self._all_3d_canvases():
             c.set_design(self._design.polygon, stock_depth_mm=stock_depth)
@@ -3270,6 +3273,27 @@ class MainWindow(QMainWindow):
                 self, "Not connected", "Connect to the CNC machine first."
             )
             return
+        # Stale-cache safety. Loaded toolpaths from a project whose
+        # signature didn't match the current params/design — we showed
+        # them on screen for convenience, but they may not be what the
+        # current settings would produce. Confirm before streaming.
+        if not dry_run and self._result_stale:
+            answer = QMessageBox.question(
+                self,
+                "Cached toolpaths may be stale",
+                "<b>The toolpaths on screen came from this project's "
+                "cached result, but the saved cache signature didn't "
+                "match the current parameters / design.</b><br><br>"
+                "If you've changed anything (bits, depths, the design "
+                "itself, materials) the cached G-code may no longer "
+                "reflect what you'd cut. Click <b>Preview Toolpaths</b> "
+                "first to refresh, or proceed if you're sure the cache "
+                "is still right.<br><br>Stream the cached G-code anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
         side_result = self._result.pocket if side == "pocket" else self._result.plug
         gcode = side_result.gcode
         if not gcode.strip():
