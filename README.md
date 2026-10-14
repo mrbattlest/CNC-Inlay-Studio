@@ -1,6 +1,23 @@
 # CNC-Inlay-Studio
 A CNC inlay studio software for Luynee 3018 CNC Router
 
+Free and open source. No trial, no license key.
+
+## Download
+
+Get the ready-to-run Mac app (`.dmg`) from the
+[latest release](https://github.com/mrbattlest/CNC-Inlay-Studio/releases/latest).
+Open the `.dmg` and drag **CNC Inlay Studio** into Applications.
+
+Requires macOS 12 or later on Apple Silicon.
+
+## Run from source
+
+```bash
+uv sync
+uv run cnc-inlay
+```
+
 ## License
 
 Created by **Malcolm Ross**.
