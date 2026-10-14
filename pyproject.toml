@@ -5,6 +5,8 @@ description = "Generate paired pocket/plug G-code files for CNC wood inlays from
 authors = [
     { name = "Malcolm Ross", email = "ross.malcolm@gmail.com" }
 ]
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "PySide6>=6.8",
