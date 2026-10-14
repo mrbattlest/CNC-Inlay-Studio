@@ -15,8 +15,8 @@ Manifest schema (see make-release.sh which writes it)::
     }
 
 Why R2 instead of GitHub Releases:
-- The source repo is private; the GitHub Releases API requires auth on
-  private repos and we don't want to bake an auth token into the app.
+- Installs from before the repo went public already poll this R2
+  manifest, so it stays the single update channel.
 - Cloudflare R2 has free egress, so DMG downloads from however many users
   cost nothing.
 - A single static manifest URL is the simplest possible auth-free contract.

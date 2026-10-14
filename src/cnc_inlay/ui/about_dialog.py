@@ -28,6 +28,7 @@ _LUNYEE_AMAZON_URL = (
 )
 _AUTHOR_NAME = "Malcolm Ross"
 _AUTHOR_EMAIL = "ross.malcolm@gmail.com"
+_REPO_URL = "https://github.com/mrbattlest/CNC-Inlay-Studio"
 
 
 def _find_icon_path() -> Path | None:
@@ -120,6 +121,12 @@ class AboutDialog(QDialog):
             f"<p>{_AUTHOR_NAME} &nbsp; "
             f"&middot; &nbsp; "
             f"<a href='mailto:{_AUTHOR_EMAIL}'>{_AUTHOR_EMAIL}</a></p>"
+            "<h3 style='margin-top:14px; margin-bottom:4px;'>"
+            "Free and open source</h3>"
+            "<p>"
+            "Released under the MIT License. Source code: "
+            f"<a href='{_REPO_URL}'>{_REPO_URL.removeprefix('https://')}</a>"
+            "</p>"
         )
         body.setTextFormat(Qt.RichText)
         body.setWordWrap(True)

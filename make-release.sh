@@ -203,10 +203,9 @@ echo "✓ DMG ready ($DMG_SIZE)"
 
 # ── 3. Upload .dmg to R2 (versioned + "latest" alias) ─────────────────────
 # We upload two copies: the versioned one (for archival + the manifest's
-# dmg_url field) and a "latest" alias at a stable URL. The Gumroad product
-# page can link to the "latest" URL once and never need updating per
-# release — buyers always download the most recent version on first
-# install, then the in-app updater takes over from there.
+# dmg_url field) and a "latest" alias at a stable URL that never needs
+# updating per release — new users always download the most recent
+# version on first install, then the in-app updater takes over.
 DMG_KEY="$R2_PREFIX/CNC-Inlay-Studio-$VERSION.dmg"
 DMG_PUBLIC_URL="$R2_PUBLIC_URL/$DMG_KEY"
 LATEST_KEY="$R2_PREFIX/CNC-Inlay-Studio-latest.dmg"

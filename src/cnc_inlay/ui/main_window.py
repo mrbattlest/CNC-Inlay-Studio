@@ -471,35 +471,6 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar(self))
         self._set_status("Load an SVG or PNG to begin.")
 
-        # Trial-status pill on the right side of the status bar. Hidden when
-        # licensed; shows "X days left in trial — Buy License" in the final
-        # nag window and "Trial expired — Buy License" after that. Click
-        # opens the Buy License dialog.
-        from PySide6.QtWidgets import QPushButton as _QBtn
-        self._trial_pill = _QBtn(self)
-        self._trial_pill.setStyleSheet(
-            "QPushButton {"
-            "  background: rgba(245, 166, 35, 220);"
-            "  color: #1d1f24;"
-            "  border: none;"
-            "  border-radius: 10px;"
-            "  padding: 2px 12px;"
-            "  font-weight: 600;"
-            "  font-size: 12px;"
-            "}"
-            "QPushButton:hover { background: rgba(255, 184, 60, 240); }"
-        )
-        self._trial_pill.clicked.connect(self._on_buy_license)
-        self.statusBar().addPermanentWidget(self._trial_pill)
-        self._refresh_trial_pill()
-        # Re-check the trial state every hour so the countdown ticks down
-        # without needing an app restart.
-        from PySide6.QtCore import QTimer as _QTimer
-        self._trial_pill_timer = _QTimer(self)
-        self._trial_pill_timer.setInterval(3600 * 1000)
-        self._trial_pill_timer.timeout.connect(self._refresh_trial_pill)
-        self._trial_pill_timer.start()
-
         self._build_menu()
         self._wire_signals()
         self.setAcceptDrops(True)
@@ -710,8 +681,8 @@ class MainWindow(QMainWindow):
         prefs_act.triggered.connect(self._on_open_preferences)
         settings_menu.addAction(prefs_act)
 
-        # Help menu — About + Check for Updates + run-log helper +
-        # licensing. macOS auto-promotes the AboutRole action into the
+        # Help menu — About + Check for Updates + run-log helper.
+        # macOS auto-promotes the AboutRole action into the
         # bold application menu next to "Quit" — Qt also keeps it
         # visible under Help so users find it from either place.
         #
@@ -744,17 +715,6 @@ class MainWindow(QMainWindow):
         reveal_log_act.setMenuRole(QAction.NoRole)
         reveal_log_act.triggered.connect(self._on_reveal_run_log)
         help_menu.addAction(reveal_log_act)
-        help_menu.addSeparator()
-        # Licensing — visible whether or not the user has a license so they
-        # can switch machines, re-enter, or upgrade from trial.
-        buy_license_act = QAction("Buy License…", self)
-        buy_license_act.setMenuRole(QAction.NoRole)
-        buy_license_act.triggered.connect(self._on_buy_license)
-        help_menu.addAction(buy_license_act)
-        enter_license_act = QAction("Enter License…", self)
-        enter_license_act.setMenuRole(QAction.NoRole)
-        enter_license_act.triggered.connect(self._on_enter_license)
-        help_menu.addAction(enter_license_act)
 
     # ----------------------------------------------------------------- wiring
 
@@ -1985,51 +1945,6 @@ class MainWindow(QMainWindow):
         from cnc_inlay.ui.about_dialog import show_about_dialog
         show_about_dialog(self)
 
-    # -------------------------------------------------------- licensing UI
-
-    def _on_buy_license(self) -> None:
-        """Help → Buy License…  also fired by the trial-status pill."""
-        from cnc_inlay.ui.license_dialog import show_buy_license_dialog
-        if show_buy_license_dialog(self):
-            self._refresh_trial_pill()
-
-    def _on_enter_license(self) -> None:
-        """Help → Enter License… — direct-to-activation (skips the marketing
-        dialog), useful when a buyer has just received their key."""
-        from cnc_inlay.ui.license_dialog import EnterLicenseDialog
-        from PySide6.QtWidgets import QDialog
-        dlg = EnterLicenseDialog(self)
-        if dlg.exec() == QDialog.Accepted:
-            self._refresh_trial_pill()
-
-    def _refresh_trial_pill(self) -> None:
-        """Show / hide / update the orange trial-status pill on the status bar."""
-        from cnc_inlay.licensing import status_bar_text
-        text = status_bar_text()
-        if text is None:
-            self._trial_pill.hide()
-        else:
-            self._trial_pill.setText(text)
-            self._trial_pill.show()
-
-    def _require_license_or_show_buy(self, feature_name: str) -> bool:
-        """Gate helper for the paid features (Run on Machine, AI Generate).
-
-        Returns True when the user is allowed to proceed (in trial OR
-        licensed). Returns False after popping the Buy License dialog when
-        the trial has expired and there's no license — caller should bail.
-        After a successful in-dialog activation the pill refreshes so the
-        user sees the new state immediately.
-        """
-        from cnc_inlay.licensing import is_unlocked
-        if is_unlocked():
-            return True
-        from cnc_inlay.ui.license_dialog import show_buy_license_dialog
-        activated = show_buy_license_dialog(self, feature_name=feature_name)
-        if activated:
-            self._refresh_trial_pill()
-        return is_unlocked()
-
     # ---------------------------------------------------------- update checks
 
     # Cross-thread bridge for the updater. The check runs on a daemon thread
@@ -2102,9 +2017,6 @@ class MainWindow(QMainWindow):
             show_up_to_date_dialog(self, result.current_version)
 
     def _on_generate_requested(self) -> None:
-        # License gate: AI generation is a paid feature.
-        if not self._require_license_or_show_buy("AI Generate"):
-            return
         from cnc_inlay.ai.secrets_store import has_api_key
 
         if not has_api_key():
@@ -3254,10 +3166,6 @@ class MainWindow(QMainWindow):
         return True
 
     def _run_on_machine(self, side: str, *, dry_run: bool, start_line: int = 0) -> None:
-        # License gate: Run on Machine is one of the paid features. Dry-run
-        # (simulator) is left FREE so trial users can preview machine motion.
-        if not dry_run and not self._require_license_or_show_buy("Run on Machine"):
-            return
         # If a resume is armed for this side, branch into the resume flow.
         if (
             not dry_run
